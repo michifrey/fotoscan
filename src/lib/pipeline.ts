@@ -1,8 +1,6 @@
 import type { EnhanceOptions } from './imaging/enhance';
 import { detectPhotoQuads } from './imaging/detect';
-import { mergeFrames } from './imaging/destack';
-import { enhance } from './imaging/enhance';
-import { outputSize, rotate, warpPerspective } from './imaging/warp';
+import { extractPhotos } from './imaging/stack';
 import type { Quad, RgbaImage } from './imaging/types';
 import type { TransferImage, WorkerRequest, WorkerResponse } from '../worker/pipeline.worker';
 
@@ -85,10 +83,5 @@ export async function extract({ frames, quads, options, rotation }: ExtractReque
 
 /** Gleiche Verarbeitung ohne Worker – Rückfallebene und Grundlage der Tests. */
 export function extractLocally({ frames, quads, options, rotation }: ExtractRequest): RgbaImage[] {
-  return quads.map((quad) => {
-    const size = outputSize(quad);
-    const warped = frames.map((frame) => warpPerspective(frame, quad, size.width, size.height));
-    const merged = warped.length > 1 ? mergeFrames(warped) : warped[0];
-    return rotate(enhance(merged, options), rotation);
-  });
+  return extractPhotos(frames, quads, options, rotation);
 }

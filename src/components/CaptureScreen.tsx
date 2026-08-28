@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCamera, wait } from '../lib/camera';
+import { orientationSupported, requestOrientationAccess, useTilt } from '../lib/orientation';
 import { imageDataFromBlob } from '../lib/canvas';
 import { detect } from '../lib/pipeline';
 import { defaultQuad } from '../lib/imaging/detect';
 import type { Quad } from '../lib/imaging/types';
 import { BackIcon, Button, IconButton } from './ui';
 import { QuadEditor } from './QuadEditor';
+import { CAPTURE_RADIUS, GuidedCapture, TARGETS, distanceToTarget } from './GuidedCapture';
 
 export interface Shot {
   frames: ImageData[];
@@ -18,11 +20,17 @@ interface Props {
   onBack: () => void;
 }
 
-/** Auflösung der Aufnahmen – bei mehreren Bildern etwas kleiner, sonst wird der Speicher knapp. */
+/** Auflösung der Aufnahmen – beim Entspiegeln kleiner, sonst wird der Speicher knapp. */
 const SINGLE_MAX = 3200;
-const STACK_MAX = 2400;
-const STACK_FRAMES = 3;
+const STACK_MAX = 2200;
 const PREVIEW_MAX = 480;
+/** Wie lange auf den Lagesensor gewartet wird, bevor die Zeitsteuerung übernimmt. */
+const SENSOR_TIMEOUT = 2500;
+
+interface GuidedState {
+  frames: ImageData[];
+  done: boolean[];
+}
 
 export function CaptureScreen({ albumName, onShot, onBack }: Props) {
   const camera = useCamera(true);
@@ -31,6 +39,8 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
   const [auto, setAuto] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [aspect, setAspect] = useState(3 / 4);
+  const [guided, setGuided] = useState<GuidedState | null>(null);
+  const { tilt, receiving, reset: resetTilt } = useTilt(guided !== null);
 
   const busy = useRef(false);
   const capturing = useRef(false);
@@ -40,43 +50,98 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
   const autoRef = useRef(auto);
   autoRef.current = auto;
 
+  /** Aufnahmereihe abschliessen: Fotos suchen und zur Prüfung weiterreichen. */
+  const finish = useCallback(
+    async (frames: ImageData[]) => {
+      setGuided(null);
+      if (frames.length === 0) {
+        capturing.current = false;
+        return;
+      }
+      setStatus('Fotos werden gesucht …');
+      try {
+        const found = await detect(frames[0]);
+        onShot({
+          frames,
+          quads: found.length > 0 ? found : [defaultQuad(frames[0].width, frames[0].height)],
+        });
+      } finally {
+        setStatus(null);
+        capturing.current = false;
+      }
+    },
+    [onShot],
+  );
+
+  /** Rückfall ohne Lagesensor: vier weitere Aufnahmen im Takt. */
+  const runTimedSeries = useCallback(
+    async (existing: ImageData[]) => {
+      setGuided(null);
+      const frames = existing.slice();
+      for (let i = frames.length; i <= TARGETS.length; i++) {
+        setStatus(`Telefon weiterbewegen … ${i} von ${TARGETS.length}`);
+        await wait(420);
+        const next = camera.capture(STACK_MAX);
+        if (next) frames.push(next);
+      }
+      await finish(frames);
+    },
+    [camera, finish],
+  );
+
   const takeShot = useCallback(async () => {
     if (capturing.current) return;
     capturing.current = true;
     lastCapture.current = Date.now();
     stableCount.current = 0;
 
-    try {
-      const maxDim = destack ? STACK_MAX : SINGLE_MAX;
-      const frames: ImageData[] = [];
-      const first = camera.capture(maxDim);
-      if (!first) return;
-      frames.push(first);
-
-      if (destack) {
-        for (let i = 1; i < STACK_FRAMES; i++) {
-          setStatus(`Telefon langsam weiterbewegen … ${i}/${STACK_FRAMES - 1}`);
-          await wait(420);
-          const next = camera.capture(maxDim);
-          if (next) frames.push(next);
-        }
-      }
-
-      setStatus('Fotos werden gesucht …');
-      const found = await detect(frames[0]);
-      setStatus(null);
-      onShot({
-        frames,
-        quads: found.length > 0 ? found : [defaultQuad(frames[0].width, frames[0].height)],
-      });
-    } finally {
+    const base = camera.capture(destack ? STACK_MAX : SINGLE_MAX);
+    if (!base) {
       capturing.current = false;
-      setStatus(null);
+      return;
     }
-  }, [camera, destack, onShot]);
+    if (!destack) {
+      await finish([base]);
+      return;
+    }
+
+    // Die Erlaubnis für den Lagesensor muss aus der Nutzeraktion heraus
+    // angefragt werden, sonst lehnt iOS sie ab.
+    const sensor = orientationSupported() && (await requestOrientationAccess());
+    if (!sensor) {
+      await runTimedSeries([base]);
+      return;
+    }
+    resetTilt();
+    setGuided({ frames: [base], done: TARGETS.map(() => false) });
+  }, [camera, destack, finish, resetTilt, runTimedSeries]);
 
   const takeShotRef = useRef(takeShot);
   takeShotRef.current = takeShot;
+
+  // Auslösen, sobald der Ring auf einem noch offenen Punkt liegt.
+  useEffect(() => {
+    if (!guided || !receiving) return;
+    const index = TARGETS.findIndex(
+      (target, i) => !guided.done[i] && distanceToTarget(tilt, target.tilt) < CAPTURE_RADIUS,
+    );
+    if (index < 0) return;
+
+    const frame = camera.capture(STACK_MAX);
+    navigator.vibrate?.(30);
+    const done = guided.done.slice();
+    done[index] = true;
+    const frames = frame ? [...guided.frames, frame] : guided.frames;
+    if (done.every(Boolean)) void finish(frames);
+    else setGuided({ frames, done });
+  }, [camera, finish, guided, receiving, tilt]);
+
+  // Meldet sich der Sensor nicht, übernimmt die Zeitsteuerung.
+  useEffect(() => {
+    if (!guided || receiving) return;
+    const handle = window.setTimeout(() => void runTimedSeries(guided.frames), SENSOR_TIMEOUT);
+    return () => window.clearTimeout(handle);
+  }, [guided, receiving, runTimedSeries]);
 
   // Laufende Erkennung auf einem verkleinerten Vorschaubild.
   useEffect(() => {
@@ -199,12 +264,26 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
           )}
         </div>
 
-        {(status || quads.length > 0) && !camera.error && (
+        {(status || quads.length > 0) && !camera.error && !guided && (
           <p className="pointer-events-none absolute inset-x-0 bottom-3 text-center text-sm">
             <span className="rounded-full bg-black/60 px-3 py-1.5 backdrop-blur">
               {status ?? `${quads.length} ${quads.length === 1 ? 'Foto' : 'Fotos'} erkannt`}
             </span>
           </p>
+        )}
+
+        {guided && (
+          <GuidedCapture
+            tilt={tilt}
+            done={guided.done}
+            receiving={receiving}
+            aspect={aspect}
+            onCancel={() => {
+              setGuided(null);
+              capturing.current = false;
+            }}
+            onFinish={() => void finish(guided.frames)}
+          />
         )}
       </div>
 
@@ -244,18 +323,18 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
             aria-label="Auslösen"
             data-testid="shutter"
             onClick={() => void takeShot()}
-            disabled={Boolean(status)}
+            disabled={Boolean(status) || guided !== null}
             className="size-18 rounded-full border-4 border-white/80 bg-amber-400 transition active:scale-95 disabled:opacity-40"
           />
 
           <div className="flex w-11 justify-center text-[11px] text-stone-500">
-            {destack ? `${STACK_FRAMES}×` : '1×'}
+            {destack ? `${TARGETS.length + 1}×` : '1×'}
           </div>
         </div>
 
         <p className="text-center text-[11px] leading-relaxed text-stone-500">
           {destack
-            ? 'Beim Auslösen mehrere Aufnahmen machen und das Telefon dabei leicht bewegen – Spiegelungen verschwinden.'
+            ? 'Nach dem Auslösen vier Punkte anfahren. Die Spiegelung liegt dann in jeder Aufnahme woanders und wird herausgerechnet.'
             : 'Eine einzelne Aufnahme, ohne Entspiegelung.'}
         </p>
       </div>
@@ -265,11 +344,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
 
 function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <Button
-      variant={active ? 'primary' : 'ghost'}
-      onClick={onClick}
-      className="rounded-full px-3 py-1.5 text-xs"
-    >
+    <Button variant={active ? 'primary' : 'ghost'} onClick={onClick} className="rounded-full px-3 py-1.5 text-xs">
       {children}
     </Button>
   );

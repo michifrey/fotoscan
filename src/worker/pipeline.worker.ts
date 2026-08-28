@@ -1,9 +1,7 @@
 /// <reference lib="webworker" />
 import { detectPhotoQuads } from '../lib/imaging/detect';
-import { mergeFrames } from '../lib/imaging/destack';
-import { enhance } from '../lib/imaging/enhance';
+import { extractPhotos } from '../lib/imaging/stack';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
-import { outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
 import type { Quad, RgbaImage } from '../lib/imaging/types';
 
 export interface TransferImage {
@@ -47,18 +45,12 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       return;
     }
 
-    const frames = request.frames.map(toRgba);
-    const images: TransferImage[] = [];
-
-    for (const quad of request.quads) {
-      const size = outputSize(quad);
-      // Jede Aufnahme wird einzeln auf dieselbe Zielfläche entzerrt; erst
-      // danach lassen sich die Aufnahmen sinnvoll verrechnen.
-      const warped = frames.map((frame) => warpPerspective(frame, quad, size.width, size.height));
-      const merged = warped.length > 1 ? mergeFrames(warped) : warped[0];
-      const improved = enhance(merged, request.options);
-      images.push(toTransfer(rotate(improved, request.rotation)));
-    }
+    const images = extractPhotos(
+      request.frames.map(toRgba),
+      request.quads,
+      request.options,
+      request.rotation,
+    ).map(toTransfer);
 
     const response: WorkerResponse = { id: request.id, type: 'extract', images };
     self.postMessage(

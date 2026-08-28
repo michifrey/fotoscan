@@ -186,3 +186,43 @@ export function defaultQuad(width: number, height: number): Quad {
   ];
   return pts as Quad;
 }
+
+/**
+ * Ordnet die Fotos einer weiteren Aufnahme denen der Grundaufnahme zu.
+ *
+ * Beim Entspiegeln wandert das Telefon zwischen den Aufnahmen, also liegt
+ * dasselbe Foto jedes Mal woanders im Bild. Ohne diese Zuordnung würde jede
+ * Aufnahme mit dem Viereck der ersten entzerrt – und damit versetzt.
+ *
+ * Gibt zu jedem Grundviereck das passende Viereck zurück oder `null`, wenn
+ * sich keines sicher zuordnen lässt.
+ */
+export function matchQuads(base: Quad[], candidates: Quad[]): (Quad | null)[] {
+  const used = new Set<number>();
+
+  return base.map((reference) => {
+    const center = quadCentroid(reference);
+    const size = Math.sqrt(polygonArea(reference));
+    let best = -1;
+    let bestDistance = Infinity;
+
+    candidates.forEach((candidate, index) => {
+      if (used.has(index)) return;
+      // Ein deutlich anderes Format ist ein anderes Foto, kein verschobenes.
+      const candidateSize = Math.sqrt(polygonArea(candidate));
+      const ratio = Math.max(candidateSize, size) / Math.min(candidateSize, size);
+      if (ratio > 1.35) return;
+
+      const distance = dist(center, quadCentroid(candidate));
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    });
+
+    // Zu weit weg: lieber nichts zuordnen als das falsche Foto verrechnen.
+    if (best < 0 || bestDistance > size * 0.45) return null;
+    used.add(best);
+    return candidates[best];
+  });
+}
