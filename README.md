@@ -125,8 +125,17 @@ einbinden.
 
 ## Veröffentlichen
 
-Statische Dateien – jeder Webspace mit HTTPS genügt. Für GitHub Pages liegt ein
-fertiger Arbeitsablauf bereit:
+Die App besteht aus statischen Dateien – jeder Webspace mit HTTPS genügt. Die
+Kamera arbeitet nur in einem sicheren Kontext, also über HTTPS oder auf
+`localhost`.
+
+In diesem Repository fährt Fotoscan als Unterpfad der bestehenden
+Pages-Veröffentlichung mit: `.github/workflows/deploy.yml` baut die App mit
+`VITE_BASE=/fotoscan/` und legt sie nach `dist/fotoscan`. Beide Schritte laufen
+mit `continue-on-error`, damit ein Fehler in Fotoscan die Karte nicht aus dem
+Netz nimmt.
+
+Für ein eigenes Repository liegt ein vollständiger Arbeitsablauf bereit:
 
 ```bash
 cp deploy.yml.example ../../.github/workflows/fotoscan.yml

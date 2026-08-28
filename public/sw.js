@@ -17,7 +17,14 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
+      // Nur die eigenen alten Caches. Der Speicher gehört der ganzen Herkunft:
+      // Ohne den Präfix löschte Fotoscan die Caches anderer Anwendungen mit,
+      // die unter derselben Adresse liegen.
+      .then((keys) =>
+        Promise.all(
+          keys.filter((key) => key.startsWith('fotoscan-') && key !== CACHE).map((key) => caches.delete(key)),
+        ),
+      )
       .then(() => self.clients.claim()),
   );
 });
