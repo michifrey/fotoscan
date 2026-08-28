@@ -1,12 +1,17 @@
-import { boxBlur, downscaleGray, toGray } from './gray';
+import { boxBlur, downscaleRgba, toGray } from './gray';
+import { estimateBackground, foregroundMask } from './background';
 import {
   close,
   componentBoundary,
   connectedComponents,
+  dilate,
+  erode,
   fillFromBorder,
+  fillHoles,
   gradientMagnitude,
   thresholdTopFraction,
 } from './mask';
+import type { Component, Mask } from './mask';
 import {
   approximateQuad,
   convexHull,
@@ -17,7 +22,8 @@ import {
   quadCentroid,
   scaleQuad,
 } from './geometry';
-import { applyHomography, computeHomography, outputSize, shrinkQuad, warpGray } from './warp';
+import { applyHomography, computeHomography, outputSize, shrinkQuad } from './warp';
+import { warpPerspective } from './warp';
 import type { GrayImage, Pt, Quad, RgbaImage } from './types';
 
 export interface DetectOptions {
@@ -39,6 +45,20 @@ const DEFAULTS: Required<DetectOptions> = {
 const CHILD_INSET = 0.012;
 
 /**
+ * Ab so viel gleichmässiger Fläche gilt ein Bereich als Untergrund, auf dem
+ * sich suchen lohnt. Darunter ist es ein Foto – und in ein Foto hineinzusuchen
+ * liefert nur seine Bildinhalte, nicht seine Ränder.
+ */
+const BACKGROUND_MIN = 0.3;
+const PAGE_MIN = 0.5;
+
+/**
+ * Grösste Fläche, die noch als Loch innerhalb eines Fotos durchgeht. Alles
+ * Grössere ist die Albumseite selbst, eingefasst vom Tisch.
+ */
+const HOLE_MAX = 0.15;
+
+/**
  * Nicht gesetzte Felder auf die Vorgabe zurückführen. Ein einfaches Spreizen
  * würde ein ausdrücklich übergebenes `undefined` durchreichen und damit die
  * Vorgabe überschreiben.
@@ -58,51 +78,200 @@ function resolve(options: DetectOptions): Required<DetectOptions> {
  */
 export function detectPhotoQuads(img: RgbaImage, options: DetectOptions = {}): Quad[] {
   const opts = resolve(options);
-  const gray = toGray(img);
-  const { image: small, scale } = downscaleGray(gray, opts.analysisSize);
-  return dedupe(detectInGray(small, 0, opts).map((q) => scaleQuad(q, scale)));
+  const { image: small, scale } = downscaleRgba(img, opts.analysisSize);
+  return dedupe(detectIn(small, 0, opts).map((q) => scaleQuad(q, scale)));
 }
 
 /**
- * Sucht Fotos in einem Graubild. Die zurückgegebenen Vierecke liegen im
- * Koordinatensystem genau dieses Graubildes.
+ * Sucht Fotos in einem Bildausschnitt. Zwei Wege, in dieser Reihenfolge:
+ *
+ * 1. Über den Untergrund. Eine Albumseite ist eine gleichmässige Fläche; was
+ *    darauf liegt, hebt sich farblich ab. Das ist das verlässlichere Signal,
+ *    denn ein Foto und eine Beschriftung bringen selbst reichlich Kanten mit,
+ *    an denen sich eine Kantensuche verheddert.
+ * 2. Über Kanten. Greift, wenn es keinen erkennbaren Untergrund gibt – etwa
+ *    bei einem Foto, das fast das ganze Bild füllt.
  */
-export function detectInGray(gray: GrayImage, depth: number, opts: Required<DetectOptions>): Quad[] {
-  if (gray.width < 48 || gray.height < 48) return [];
+function detectIn(img: RgbaImage, depth: number, opts: Required<DetectOptions>): Quad[] {
+  if (img.width < 48 || img.height < 48) return [];
+  const gray = toGray(img);
 
+  let regions = backgroundQuads(img, gray, depth, opts);
+  if (regions.length === 0) regions = edgeQuads(gray, opts);
+
+  const results: Quad[] = [];
+  for (const quad of regions) {
+    const children = depth < opts.maxDepth ? childQuads(img, quad, polygonArea(quad), depth, opts) : [];
+    if (children.length > 0) results.push(...children);
+    else results.push(quad);
+  }
+  return results;
+}
+
+/** Weg 1: alles, was sich farblich vom Untergrund abhebt. */
+function backgroundQuads(
+  img: RgbaImage,
+  gray: GrayImage,
+  depth: number,
+  opts: Required<DetectOptions>,
+): Quad[] {
+  const background = estimateBackground(img, gray);
+  if (background.fraction < BACKGROUND_MIN) return [];
+
+  // Öffnen entfernt, was dünner ist als ein Foto: Beschriftung, Fusseln,
+  // Papierstruktur. Der Radius ist an einer echten Albumseite eingestellt –
+  // kleiner, und eine danebenstehende Bildunterschrift bleibt am Foto kleben
+  // und zieht den Zuschnitt auf.
+  const radius = Math.max(3, Math.round(Math.min(img.width, img.height) * 0.019));
+  const raw = fillHoles(foregroundMask(img, background), HOLE_MAX);
+  const mask = open(raw, radius);
+
+  // Auf der obersten Ebene ist alles, was den Bildrand berührt, die Umgebung –
+  // Tischplatte, Nachbarseiten, die eigene Hand. Die Einrückung bleibt klein:
+  // Der Farbübergang ist scharf, es fällt kein verbreiterter Saum an wie bei
+  // der Kantensuche.
+  return quadsFromMask(mask, opts, 2, depth === 0, true, raw, radius);
+}
+
+/** Geschlossener Kantenzug über die stärksten Gradienten. */
+function edgeMask(gray: GrayImage): Mask {
   const smoothed = boxBlur(boxBlur(gray, 1), 1);
-  const mag = gradientMagnitude(smoothed);
-  const edges = thresholdTopFraction(mag, gray.width, gray.height, 0.1);
+  const magnitude = gradientMagnitude(smoothed);
   const closeRadius = Math.max(1, Math.round(Math.max(gray.width, gray.height) / 320));
-  const solid = fillFromBorder(close(edges, closeRadius));
-  const { labels, components } = connectedComponents(solid);
+  return close(thresholdTopFraction(magnitude, gray.width, gray.height, 0.1), closeRadius);
+}
 
-  const totalArea = gray.width * gray.height;
+/** Weg 2: Flächen, die von einem geschlossenen Kantenzug umgeben sind. */
+function edgeQuads(gray: GrayImage, opts: Required<DetectOptions>): Quad[] {
+  const closeRadius = Math.max(1, Math.round(Math.max(gray.width, gray.height) / 320));
+  const solid = fillFromBorder(edgeMask(gray));
+  // Weichzeichnen und Sobel verbreitern die Kante; ohne diese Korrektur läge
+  // ein heller Saum der Albumseite mit im Zuschnitt.
+  return quadsFromMask(solid, opts, closeRadius + 1, false, false, null, 0);
+}
+
+function open(mask: Mask, radius: number): Mask {
+  return dilate(erode(mask, radius), radius);
+}
+
+/** Aus einer Maske die brauchbaren Vierecke gewinnen. */
+function quadsFromMask(
+  mask: Mask,
+  opts: Required<DetectOptions>,
+  inset: number,
+  dropBorderTouching: boolean,
+  mergeOverlapping: boolean,
+  /** Ungeöffnete Maske, aus der die Geometrie stammt (siehe unten). */
+  raw: Mask | null,
+  reach: number,
+): Quad[] {
+  const { labels, components } = connectedComponents(mask);
+  const totalArea = mask.width * mask.height;
   const minArea = totalArea * opts.minAreaFraction;
+
+  const usable = components.filter(
+    (comp) =>
+      comp.area >= minArea &&
+      comp.area <= totalArea * 0.995 &&
+      !(dropBorderTouching && touchesBorder(comp, mask)),
+  );
+
+  const groups = mergeOverlapping ? groupOverlapping(usable) : usable.map((comp) => [comp]);
   const results: Quad[] = [];
 
-  for (const comp of components) {
-    if (comp.area < minArea) continue;
-    if (comp.area > totalArea * 0.995) continue;
-
-    const boundary = componentBoundary(labels, gray.width, gray.height, comp);
+  for (const group of groups) {
+    // Das Öffnen entfernt die Beschriftung, rundet dabei aber die Ecken ab.
+    // Für die Form zählt deshalb die ungeöffnete Maske – begrenzt auf die
+    // Umgebung der gefundenen Fläche. So kehren die Ecken zurück, ohne dass
+    // sich der Zuschnitt an einer danebenstehenden Zeile entlanghangelt.
+    const boundary =
+      raw === null
+        ? group.flatMap((comp) => componentBoundary(labels, mask.width, mask.height, comp))
+        : boundaryNear(raw, group, reach);
     const quad = approximateQuad(convexHull(boundary));
     if (!quad) continue;
 
     const area = polygonArea(quad);
     // Eine L- oder U-Form füllt ihr Viereck nicht aus – solche Flächen sind
-    // keine Fotos, sondern meist Schatten oder angeschnittene Seiten.
-    if (area < comp.area * 0.62) continue;
+    // keine Fotos, sondern Schatten, Beschriftung oder angeschnittene Seiten.
+    const filled = group.reduce((sum, comp) => sum + comp.area, 0);
+    if (filled < area * 0.62) continue;
     if (!isPlausibleQuad(quad)) continue;
 
-    const children = depth < opts.maxDepth ? childQuads(gray, quad, area, depth, opts) : [];
-    if (children.length > 0) results.push(...children);
-    // Weichzeichnen und Sobel verbreitern die Kante; ohne diese Korrektur läge
-    // ein heller Saum der Albumseite mit im Zuschnitt.
-    else results.push(insetQuad(quad, closeRadius + 1));
+    results.push(insetQuad(quad, inset));
   }
-
   return results;
+}
+
+/** Randpunkte der ungeöffneten Maske im Umkreis der gefundenen Flächen. */
+function boundaryNear(raw: Mask, group: Component[], reach: number): Pt[] {
+  const minX = Math.max(0, Math.min(...group.map((c) => c.minX)) - reach);
+  const maxX = Math.min(raw.width - 1, Math.max(...group.map((c) => c.maxX)) + reach);
+  const minY = Math.max(0, Math.min(...group.map((c) => c.minY)) - reach);
+  const maxY = Math.min(raw.height - 1, Math.max(...group.map((c) => c.maxY)) + reach);
+
+  const points: Pt[] = [];
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (!raw.data[y * raw.width + x]) continue;
+      const edge =
+        x === minX ||
+        y === minY ||
+        x === maxX ||
+        y === maxY ||
+        !raw.data[y * raw.width + x - 1] ||
+        !raw.data[y * raw.width + x + 1] ||
+        !raw.data[(y - 1) * raw.width + x] ||
+        !raw.data[(y + 1) * raw.width + x];
+      if (edge) points.push({ x, y });
+    }
+  }
+  return points;
+}
+
+/**
+ * Fasst Flächen zusammen, die sich überlappen.
+ *
+ * Ein Foto mit einer hellen, papierfarbenen Stelle – einer Bettdecke, einem
+ * blassen Himmel – zerfällt bei der Farbtrennung in mehrere Bruchstücke. Die
+ * liegen ineinander; zwei nebeneinanderliegende Fotos tun das nie.
+ */
+function groupOverlapping(components: Component[]): Component[][] {
+  const groups: Component[][] = [];
+
+  for (const comp of components) {
+    // Nur kompakte Flächen dürfen verschmelzen. Ein dünner Rand oder Schatten
+    // hat ein riesiges umschliessendes Rechteck und würde sonst sämtliche
+    // Fotos darin einsammeln.
+    const compact = fillRatio(comp) > 0.4;
+    const hit = compact
+      ? groups.find((group) => group.some((other) => fillRatio(other) > 0.4 && overlapRatio(comp, other) > 0.35))
+      : undefined;
+    if (hit) hit.push(comp);
+    else groups.push([comp]);
+  }
+  return groups;
+}
+
+/** Wie gut eine Fläche ihr umschliessendes Rechteck ausfüllt. */
+function fillRatio(comp: Component): number {
+  return comp.area / (((comp.maxX - comp.minX + 1) * (comp.maxY - comp.minY + 1)) || 1);
+}
+
+/** Überlappung der umschliessenden Rechtecke, bezogen auf das kleinere. */
+function overlapRatio(a: Component, b: Component): number {
+  const w = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX) + 1;
+  const h = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY) + 1;
+  if (w <= 0 || h <= 0) return 0;
+  const smaller = Math.min(
+    (a.maxX - a.minX + 1) * (a.maxY - a.minY + 1),
+    (b.maxX - b.minX + 1) * (b.maxY - b.minY + 1),
+  );
+  return (w * h) / smaller;
+}
+
+function touchesBorder(comp: Component, mask: Mask): boolean {
+  return comp.minX === 0 || comp.minY === 0 || comp.maxX === mask.width - 1 || comp.maxY === mask.height - 1;
 }
 
 /**
@@ -114,7 +283,7 @@ export function detectInGray(gray: GrayImage, depth: number, opts: Required<Dete
  * nahe am Seitenrand kleben, bleiben von der Umgebung getrennt.
  */
 function childQuads(
-  gray: GrayImage,
+  img: RgbaImage,
   quad: Quad,
   parentArea: number,
   depth: number,
@@ -124,8 +293,14 @@ function childQuads(
   const size = outputSize(inner, opts.analysisSize);
   if (size.width < 64 || size.height < 64) return [];
 
-  const warped = warpGray(gray, inner, size.width, size.height);
-  const found = detectInGray(warped, depth + 1, opts);
+  const warped = warpPerspective(img, inner, size.width, size.height);
+
+  // Nur in Flächen hineinsuchen, die wie eine Albumseite aussehen. Ein Foto
+  // besteht aus Bildinhalt, nicht aus gleichmässigem Untergrund – wer darin
+  // weitersucht, findet seine Motive statt seiner Ränder.
+  if (estimateBackground(warped, toGray(warped)).fraction < PAGE_MIN) return [];
+
+  const found = detectIn(warped, depth + 1, opts);
   if (found.length === 0) return [];
 
   const rect: Quad = [

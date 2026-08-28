@@ -114,3 +114,96 @@ export function flatTexture(width: number, height: number, r: number, g: number,
   fill(img, r, g, b);
   return img;
 }
+
+/** Handschriftähnliche Striche – dünn, dunkel, in einer Zeile. */
+export function drawHandwriting(
+  img: RgbaImage,
+  x0: number,
+  y0: number,
+  width: number,
+  height: number,
+  seed: number,
+): void {
+  const rnd = lcg(seed);
+  const thickness = Math.max(2, Math.round(height * 0.12));
+  let x = x0;
+  while (x < x0 + width) {
+    const w = Math.round(height * (0.4 + rnd() * 0.5));
+    const top = y0 + Math.round(rnd() * height * 0.2);
+    const bottom = y0 + height - Math.round(rnd() * height * 0.2);
+    // Ein Buchstabe: zwei senkrechte Striche und ein Querstrich.
+    for (const sx of [x, x + w]) {
+      for (let yy = top; yy < bottom; yy++) {
+        for (let t = 0; t < thickness; t++) stroke(img, sx + t, yy);
+      }
+    }
+    const my = (top + bottom) >> 1;
+    for (let xx = x; xx <= x + w; xx++) {
+      for (let t = 0; t < thickness; t++) stroke(img, xx, my + t);
+    }
+    x += w + Math.round(height * 0.35);
+  }
+}
+
+function stroke(img: RgbaImage, x: number, y: number): void {
+  if (x < 0 || y < 0 || x >= img.width || y >= img.height) return;
+  const i = (y * img.width + x) * 4;
+  img.data[i] = 40;
+  img.data[i + 1] = 38;
+  img.data[i + 2] = 42;
+  img.data[i + 3] = 255;
+}
+
+/**
+ * Ein Foto, das selbst eine grosse helle Fläche enthält – eine Bettdecke, ein
+ * bewölkter Himmel. Die Fläche liegt im Inneren, mit Bildinhalt ringsum: Genau
+ * so sieht es auf einem echten Abzug aus, und genau daran zerbricht eine reine
+ * Farbtrennung, wenn sie die Stelle nicht als Loch im Foto begreift.
+ */
+export function photoWithPaleArea(
+  width: number,
+  height: number,
+  seed: number,
+  pale: [number, number, number],
+): RgbaImage {
+  const img = photoTexture(width, height, seed);
+  const rnd = lcg(seed * 13);
+  const x0 = Math.round(width * 0.18);
+  const x1 = Math.round(width * 0.62);
+  const y0 = Math.round(height * 0.2);
+  const y1 = Math.round(height * 0.82);
+
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * width + x) * 4;
+      const noise = (rnd() - 0.5) * 8;
+      img.data[i] = pale[0] + noise;
+      img.data[i + 1] = pale[1] + noise;
+      img.data[i + 2] = pale[2] + noise;
+    }
+  }
+  return img;
+}
+
+/** Weiche dunkle Formen, wie Möbel oder Geräte im Hintergrund eines Fotos. */
+export function addSoftShapes(img: RgbaImage, seed: number, count: number): void {
+  const rnd = lcg(seed);
+  for (let n = 0; n < count; n++) {
+    const cx = img.width * (0.2 + rnd() * 0.6);
+    const cy = img.height * (0.2 + rnd() * 0.6);
+    const rx = img.width * (0.1 + rnd() * 0.12);
+    const ry = img.height * (0.1 + rnd() * 0.12);
+    for (let y = Math.round(cy - ry); y <= cy + ry; y++) {
+      for (let x = Math.round(cx - rx); x <= cx + rx; x++) {
+        if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue;
+        const d = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2;
+        if (d > 1) continue;
+        // Weicher Rand: kein harter Übergang, wie ihn ein aufgeklebtes
+        // Rechteck hätte.
+        const strength = (1 - Math.sqrt(d)) * 0.75;
+        const i = (y * img.width + x) * 4;
+        for (let c = 0; c < 3; c++) img.data[i + c] = img.data[i + c] * (1 - strength) + 45 * strength;
+      }
+    }
+  }
+}

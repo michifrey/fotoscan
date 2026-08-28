@@ -233,3 +233,38 @@ export function componentBoundary(labels: Int32Array, width: number, height: num
   }
   return pts;
 }
+
+/**
+ * Füllt eingeschlossene Löcher – aber nur kleine.
+ *
+ * Ein Foto darf innen papierfarbene Stellen haben; die sollen mitzählen. Die
+ * Albumseite selbst ist dagegen ebenfalls von ihrer Umgebung eingeschlossen
+ * (der Tisch läuft rundherum), und die darf gerade nicht zugeschüttet werden –
+ * sonst verschmilzt die ganze Seite mit dem Tisch zu einer Fläche. Die Grösse
+ * unterscheidet die beiden Fälle zuverlässig.
+ */
+export function fillHoles(mask: Mask, maxFraction: number): Mask {
+  const inverted: Mask = {
+    data: Uint8Array.from(mask.data, (v) => (v ? 0 : 1)),
+    width: mask.width,
+    height: mask.height,
+  };
+  const { labels, components } = connectedComponents(inverted);
+  const limit = mask.width * mask.height * maxFraction;
+  const data = Uint8Array.from(mask.data);
+
+  for (const comp of components) {
+    if (comp.area > limit) continue;
+    // Was den Bildrand berührt, ist die Umgebung, kein Loch.
+    if (comp.minX === 0 || comp.minY === 0 || comp.maxX === mask.width - 1 || comp.maxY === mask.height - 1) {
+      continue;
+    }
+    for (let y = comp.minY; y <= comp.maxY; y++) {
+      for (let x = comp.minX; x <= comp.maxX; x++) {
+        const i = y * mask.width + x;
+        if (labels[i] === comp.label) data[i] = 1;
+      }
+    }
+  }
+  return { data, width: mask.width, height: mask.height };
+}
