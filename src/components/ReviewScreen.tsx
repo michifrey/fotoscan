@@ -1,0 +1,236 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { blobFromImageData, toImageData } from '../lib/canvas';
+import { enhance } from '../lib/imaging/enhance';
+import type { EnhanceOptions } from '../lib/imaging/enhance';
+import { outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
+import { scaleQuad } from '../lib/imaging/geometry';
+import type { Quad } from '../lib/imaging/types';
+import { extract } from '../lib/pipeline';
+import type { Shot } from './CaptureScreen';
+import { QuadEditor } from './QuadEditor';
+import { BackIcon, Button, IconButton, Spinner, Switch, TopBar } from './ui';
+
+export interface ExtractedPhoto {
+  blob: Blob;
+  width: number;
+  height: number;
+}
+
+interface Props {
+  shot: Shot;
+  onCancel: () => void;
+  onAccept: (photos: ExtractedPhoto[]) => Promise<void>;
+}
+
+const PREVIEW_MAX = 420;
+
+export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
+  const [quads, setQuads] = useState<Quad[]>(shot.quads);
+  const [selected, setSelected] = useState<number[]>(shot.quads.map((_, i) => i));
+  const [editing, setEditing] = useState<number | null>(shot.quads.length > 0 ? 0 : null);
+  const [rotation, setRotation] = useState(0);
+  const [options, setOptions] = useState<EnhanceOptions>({ levels: true, whiteBalance: true, sharpen: true });
+  const [showDetails, setShowDetails] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+
+  const frame = shot.frames[0];
+  const previewCanvas = useRef<HTMLCanvasElement | null>(null);
+
+  // Verkleinerte Kopie der Aufnahme – nur für die Vorschau, damit das
+  // Nachführen beim Ziehen der Ecken flüssig bleibt.
+  const small = useMemo(() => {
+    const factor = Math.min(1, 900 / Math.max(frame.width, frame.height));
+    const width = Math.max(1, Math.round(frame.width * factor));
+    const height = Math.max(1, Math.round(frame.height * factor));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    const source = document.createElement('canvas');
+    source.width = frame.width;
+    source.height = frame.height;
+    source.getContext('2d')!.putImageData(frame, 0, 0);
+    ctx.drawImage(source, 0, 0, width, height);
+    return { image: ctx.getImageData(0, 0, width, height), scale: factor };
+  }, [frame]);
+
+  useEffect(() => {
+    let url: string | null = null;
+    void blobFromImageData(small.image, 0.85).then((blob) => {
+      url = URL.createObjectURL(blob);
+      setSourceUrl(url);
+    });
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [small]);
+
+  const firstSelected = selected.length > 0 ? Math.min(...selected) : null;
+
+  // Vorschau des ersten ausgewählten Fotos, klein und auf dem Hauptthread.
+  useEffect(() => {
+    const canvas = previewCanvas.current;
+    if (!canvas || firstSelected === null) return;
+    const quad = quads[firstSelected];
+    if (!quad) return;
+
+    const handle = window.setTimeout(() => {
+      const scaled = scaleQuad(quad, small.scale);
+      const size = outputSize(scaled, PREVIEW_MAX);
+      const warped = warpPerspective(small.image, scaled, size.width, size.height);
+      const result = rotate(enhance(warped, options), rotation);
+      canvas.width = result.width;
+      canvas.height = result.height;
+      canvas.getContext('2d')?.putImageData(toImageData(result), 0, 0);
+    }, 60);
+    return () => window.clearTimeout(handle);
+  }, [firstSelected, quads, options, rotation, small]);
+
+  const toggle = useCallback((index: number) => {
+    setSelected((current) =>
+      current.includes(index) ? current.filter((i) => i !== index) : [...current, index].sort((a, b) => a - b),
+    );
+  }, []);
+
+  const accept = useCallback(async () => {
+    if (selected.length === 0) return;
+    setSaving(true);
+    try {
+      const chosen = selected.map((index) => quads[index]).filter(Boolean);
+      const images = await extract({ frames: shot.frames, quads: chosen, options, rotation });
+      const photos = await Promise.all(
+        images.map(async (image) => ({
+          blob: await blobFromImageData(image, 0.92),
+          width: image.width,
+          height: image.height,
+        })),
+      );
+      await onAccept(photos);
+    } finally {
+      setSaving(false);
+    }
+  }, [onAccept, options, quads, rotation, selected, shot.frames]);
+
+  if (saving) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-stone-950 text-stone-100">
+        <Spinner label={selected.length > 1 ? `${selected.length} Fotos werden verarbeitet …` : 'Foto wird verarbeitet …'} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-dvh flex-col bg-stone-950 text-stone-100">
+      <TopBar
+        title="Zuschnitt prüfen"
+        left={
+          <IconButton label="Verwerfen" onClick={onCancel}>
+            <BackIcon />
+          </IconButton>
+        }
+      />
+
+      <div className="flex-1 overflow-y-auto pb-40">
+        <div className="relative mx-auto w-full max-w-2xl" style={{ aspectRatio: frame.width / frame.height }}>
+          {sourceUrl && <img src={sourceUrl} alt="Aufnahme" className="size-full object-contain" />}
+          <QuadEditor
+            width={frame.width}
+            height={frame.height}
+            quads={quads}
+            selected={selected}
+            editing={editing}
+            onToggle={toggle}
+            onActivate={setEditing}
+            onChange={(index, quad) => setQuads((current) => current.map((q, i) => (i === index ? quad : q)))}
+          />
+        </div>
+
+        <div className="mx-auto max-w-2xl space-y-4 px-4 pt-4">
+          <p className="text-xs text-stone-400">
+            {quads.length > 1
+              ? 'Das Häkchen nimmt ein Foto aus der Auswahl. Tippe auf ein Foto, um seine Ecken zu zeigen und zu ziehen.'
+              : 'Ziehe die Ecken, wenn der Zuschnitt nicht stimmt.'}
+          </p>
+
+          <div className="flex items-start gap-4">
+            <div className="flex-1">
+              <p className="mb-2 text-xs font-medium tracking-wide text-stone-400 uppercase">Vorschau</p>
+              <div className="flex min-h-32 items-center justify-center rounded-xl bg-black/40 p-2">
+                {firstSelected === null ? (
+                  <span className="text-xs text-stone-500">Kein Foto ausgewählt</span>
+                ) : (
+                  <canvas ref={previewCanvas} className="max-h-48 max-w-full rounded-md" />
+                )}
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 pt-6">
+              <IconButton label="Nach links drehen" onClick={() => setRotation((r) => (r + 3) % 4)}>
+                <RotateIcon />
+              </IconButton>
+              <IconButton label="Nach rechts drehen" onClick={() => setRotation((r) => (r + 1) % 4)}>
+                <RotateIcon className="-scale-x-100" />
+              </IconButton>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-white/10 px-4">
+            <Switch
+              label="Automatisch verbessern"
+              hint="Tonwerte spreizen und leicht nachschärfen"
+              checked={options.levels || options.sharpen}
+              onChange={(value) => setOptions((o) => ({ ...o, levels: value, sharpen: value }))}
+            />
+            {showDetails && (
+              <>
+                <Switch
+                  label="Tonwerte spreizen"
+                  checked={options.levels}
+                  onChange={(value) => setOptions((o) => ({ ...o, levels: value }))}
+                />
+                <Switch
+                  label="Nachschärfen"
+                  checked={options.sharpen}
+                  onChange={(value) => setOptions((o) => ({ ...o, sharpen: value }))}
+                />
+              </>
+            )}
+            <Switch
+              label="Farbstich entfernen"
+              hint="Nimmt vergilbten Abzügen den Gelbton"
+              checked={options.whiteBalance}
+              onChange={(value) => setOptions((o) => ({ ...o, whiteBalance: value }))}
+            />
+            <button
+              type="button"
+              onClick={() => setShowDetails((v) => !v)}
+              className="w-full py-2 text-left text-xs text-stone-500 hover:text-stone-300"
+            >
+              {showDetails ? 'Weniger anzeigen' : 'Einzelne Schritte anzeigen'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-stone-950/95 px-4 pt-3 pb-6 backdrop-blur">
+        <div className="mx-auto flex max-w-2xl gap-3">
+          <Button onClick={onCancel} className="flex-1">
+            Verwerfen
+          </Button>
+          <Button variant="primary" onClick={() => void accept()} disabled={selected.length === 0} className="flex-[2]" data-testid="accept">
+            {selected.length > 1 ? `${selected.length} Fotos speichern` : 'Foto speichern'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RotateIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={`size-5 ${className}`} fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M4 9a8 8 0 1 1 1.5 7" strokeLinecap="round" />
+      <path d="M3 4v5h5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
