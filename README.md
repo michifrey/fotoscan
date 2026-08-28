@@ -129,20 +129,17 @@ Die App besteht aus statischen Dateien – jeder Webspace mit HTTPS genügt. Die
 Kamera arbeitet nur in einem sicheren Kontext, also über HTTPS oder auf
 `localhost`.
 
-In diesem Repository fährt Fotoscan als Unterpfad der bestehenden
-Pages-Veröffentlichung mit: `.github/workflows/deploy.yml` baut die App mit
-`VITE_BASE=/fotoscan/` und legt sie nach `dist/fotoscan`. Beide Schritte laufen
-mit `continue-on-error`, damit ein Fehler in Fotoscan die Karte nicht aus dem
-Netz nimmt.
+`.github/workflows/deploy.yml` erledigt das für GitHub Pages: Bei jedem Push
+auf `main` laufen erst die Modultests, dann der Bau mit `VITE_BASE=/<repo>/`,
+dann die Veröffentlichung. Schlagen die Tests fehl, bleibt die zuletzt
+veröffentlichte Fassung stehen. Pages schaltet sich beim ersten Lauf selbst
+ein.
 
-Für ein eigenes Repository liegt ein vollständiger Arbeitsablauf bereit:
+Ergebnis: `https://<name>.github.io/<repo>/`
 
-```bash
-cp deploy.yml.example ../../.github/workflows/fotoscan.yml
-```
-
-Für eine Projektseite unter `https://<name>.github.io/<repo>/` muss beim Bauen
-`VITE_BASE=/<repo>/` gesetzt sein; der Arbeitsablauf erledigt das.
+Für eine eigene Domain den Namen in `public/CNAME` legen und in den
+Repository-Einstellungen eintragen; dann liegt die App an der Wurzel und
+`VITE_BASE` kann entfallen.
 
 ## Lizenz
 
