@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCamera, wait } from '../lib/camera';
+import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { orientationSupported, requestOrientationAccess, useTilt } from '../lib/orientation';
 import { imageDataFromBlob } from '../lib/canvas';
 import { detect } from '../lib/pipeline';
@@ -8,6 +9,7 @@ import type { Quad } from '../lib/imaging/types';
 import { BackIcon, Button, IconButton } from './ui';
 import { QuadEditor } from './QuadEditor';
 import { CAPTURE_RADIUS, GuidedCapture, TARGETS, distanceToTarget } from './GuidedCapture';
+import { CameraSettings, GearIcon } from './CameraSettings';
 
 export interface Shot {
   frames: ImageData[];
@@ -33,7 +35,9 @@ interface GuidedState {
 }
 
 export function CaptureScreen({ albumName, onShot, onBack }: Props) {
-  const camera = useCamera(true);
+  const [deviceId, setDeviceId] = useState<string | null>(() => rememberedCamera());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const camera = useCamera(true, deviceId);
   const [quads, setQuads] = useState<Quad[]>([]);
   const [destack, setDestack] = useState(true);
   const [auto, setAuto] = useState(true);
@@ -48,7 +52,27 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
   const lastCapture = useRef(0);
   const previewSize = useRef({ width: 4, height: 3 });
   const autoRef = useRef(auto);
-  autoRef.current = auto;
+  autoRef.current = auto && !settingsOpen;
+  const chosen = useRef(false);
+  const fellBack = useRef(false);
+
+  // Ohne Zutun greift der Browser auf manchen Geräten zum Ultraweitwinkel.
+  // Sobald die Objektive bekannt sind, wird einmalig auf die Hauptkamera
+  // gewechselt – aber nur, wenn nicht ohnehin schon die richtige läuft.
+  useEffect(() => {
+    if (chosen.current || deviceId !== null || camera.cameras.length === 0) return;
+    chosen.current = true;
+    const best = preferred(camera.cameras);
+    if (best && best.deviceId !== camera.activeId) setDeviceId(best.deviceId);
+  }, [camera.cameras, camera.activeId, deviceId]);
+
+  // Ein gemerktes Objektiv kann es auf diesem Gerät nicht mehr geben. Dann
+  // einmal ohne Vorgabe öffnen, statt bei der Fehlermeldung stehenzubleiben.
+  useEffect(() => {
+    if (!camera.error || deviceId === null || fellBack.current) return;
+    fellBack.current = true;
+    setDeviceId(null);
+  }, [camera.error, deviceId]);
 
   /** Aufnahmereihe abschliessen: Fotos suchen und zur Prüfung weiterreichen. */
   const finish = useCallback(
@@ -251,17 +275,25 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
           <span className="pointer-events-none max-w-[55%] truncate rounded-full bg-black/50 px-3 py-1.5 text-xs backdrop-blur">
             {albumName}
           </span>
-          {camera.torchAvailable ? (
+          <span className="flex gap-2">
+            {camera.torchAvailable && (
+              <IconButton
+                label={camera.torchOn ? 'Licht aus' : 'Licht an'}
+                onClick={() => void camera.toggleTorch()}
+                className={`pointer-events-auto ${camera.torchOn ? 'text-amber-300' : ''}`}
+              >
+                <TorchIcon />
+              </IconButton>
+            )}
             <IconButton
-              label={camera.torchOn ? 'Licht aus' : 'Licht an'}
-              onClick={() => void camera.toggleTorch()}
-              className={`pointer-events-auto ${camera.torchOn ? 'text-amber-300' : ''}`}
+              label="Kameraeinstellungen"
+              onClick={() => setSettingsOpen(true)}
+              className="pointer-events-auto"
+              data-testid="camera-settings-open"
             >
-              <TorchIcon />
+              <GearIcon />
             </IconButton>
-          ) : (
-            <span className="size-11" />
-          )}
+          </span>
         </div>
 
         {(status || quads.length > 0) && !camera.error && !guided && (
@@ -270,6 +302,27 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
               {status ?? `${quads.length} ${quads.length === 1 ? 'Foto' : 'Fotos'} erkannt`}
             </span>
           </p>
+        )}
+
+        {settingsOpen && (
+          <CameraSettings
+            cameras={camera.cameras}
+            activeId={camera.activeId}
+            zoom={camera.zoom}
+            zoomValue={camera.zoomValue}
+            focusModes={camera.focusModes}
+            focusMode={camera.focusMode}
+            resolution={camera.resolution}
+            onPick={(id) => {
+              chosen.current = true;
+              fellBack.current = false;
+              rememberCamera(id);
+              setDeviceId(id);
+            }}
+            onZoom={(value) => void camera.setZoom(value)}
+            onFocus={(mode) => void camera.setFocusMode(mode)}
+            onClose={() => setSettingsOpen(false)}
+          />
         )}
 
         {guided && (

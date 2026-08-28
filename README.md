@@ -21,6 +21,11 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
   Verrechnen als heller Ausreisser heraus.
 - **Aufhellen.** Tonwerte spreizen, leicht nachschärfen und – abschaltbar – den
   Gelbstich vergilbter Abzüge abschwächen.
+- **Objektiv wählen.** Moderne Telefone haben mehrere Rückkameras, und der
+  Browser greift von sich aus gern zum Ultraweitwinkel – das biegt gerade
+  Fotokanten sichtbar krumm. Die App wählt darum selbst die Hauptkamera und
+  lässt die Wahl über das Einstellungssymbol ändern; dazu Zoom und Fokus,
+  soweit das Gerät sie hergibt. Die Wahl wird gemerkt.
 - **Alben verwalten.** Scans werden pro Album im Gerät gespeichert und lassen
   sich einzeln teilen oder als ZIP-Datei exportieren.
 - **Offline.** Nach dem ersten Aufruf läuft die App als installierte PWA ohne

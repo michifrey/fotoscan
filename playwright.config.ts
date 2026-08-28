@@ -32,7 +32,7 @@ export default defineConfig({
       // Chromium liefert ein künstliches Kamerabild; die Neigung des Telefons
       // wird im Test als DeviceOrientation-Ereignis nachgestellt.
       name: 'mit-kamera',
-      testMatch: /entspiegeln\.spec\.ts/,
+      testMatch: /(entspiegeln|kamera)\.spec\.ts/,
       use: {
         permissions: ['camera'],
         launchOptions: {
