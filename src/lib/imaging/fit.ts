@@ -84,6 +84,107 @@ export function fitHomographyRobust(from: Pt[], to: Pt[]): number[] | null {
   return fitHomography(keptFrom, keptTo) ?? first;
 }
 
+/**
+ * Dasselbe für eine Affine: sechs Freiheitsgrade statt acht.
+ *
+ * Zwischen zwei Vorschaubildern liegt der Bruchteil einer Sekunde. Eine
+ * Homographie über diese kurze Strecke zu legen heisst, aus einer winzigen
+ * Bewegung auch noch die Perspektive lesen zu wollen – die beiden letzten
+ * Freiheitsgrade sind dann kaum bestimmt und tragen vor allem Rauschen. Und
+ * dieses Rauschen bliebe nicht folgenlos: Es multipliziert sich Bild für Bild
+ * in die mitgeführte Lage hinein. Verschiebung, Drehung, Massstab und Scherung
+ * reichen für einen Augenblick Bewegung vollkommen.
+ */
+export function fitAffine(from: Pt[], to: Pt[]): number[] | null {
+  if (from.length !== to.length || from.length < 3) return null;
+
+  const src = normalise(from);
+  const dst = normalise(to);
+  if (!src || !dst) return null;
+
+  // Die beiden Zeilen der Affine sind voneinander unabhängig: x' hängt nur von
+  // (x, y, 1) ab, y' ebenso. Statt eines 6×6-Systems also zweimal dasselbe
+  // 3×3-System mit verschiedenen rechten Seiten.
+  const ata = [new Float64Array(3), new Float64Array(3), new Float64Array(3)];
+  const atx = new Float64Array(3);
+  const aty = new Float64Array(3);
+
+  for (let i = 0; i < src.points.length; i++) {
+    const row = [src.points[i].x, src.points[i].y, 1];
+    for (let a = 0; a < 3; a++) {
+      atx[a] += row[a] * dst.points[i].x;
+      aty[a] += row[a] * dst.points[i].y;
+      for (let b = 0; b < 3; b++) ata[a][b] += row[a] * row[b];
+    }
+  }
+
+  const first = solveSmall(ata, atx);
+  const second = solveSmall(ata, aty);
+  if (!first || !second) return null;
+
+  const normalised = [first[0], first[1], first[2], second[0], second[1], second[2], 0, 0, 1];
+  return compose(inverseSimilarity(dst.transform), compose(normalised, src.transform));
+}
+
+/** Die Affine, unempfindlich gegen einzelne falsche Zuordnungen. */
+export function fitAffineRobust(from: Pt[], to: Pt[]): number[] | null {
+  const first = fitAffine(from, to);
+  if (!first || from.length <= 4) return first;
+
+  const errors = from.map((point, i) => residual(first, point, to[i]));
+  const limit = Math.max(1, 2.5 * median(errors));
+
+  const keptFrom: Pt[] = [];
+  const keptTo: Pt[] = [];
+  for (let i = 0; i < from.length; i++) {
+    if (errors[i] > limit) continue;
+    keptFrom.push(from[i]);
+    keptTo.push(to[i]);
+  }
+  if (keptFrom.length < 3 || keptFrom.length < from.length * 0.5) return first;
+
+  return fitAffine(keptFrom, keptTo) ?? first;
+}
+
+/**
+ * Verkettung zweier Abbildungen: erst `b`, dann `a`.
+ *
+ * Ohne Normierung auf h₈ = 1, anders als beim Lösen der Gleichungssysteme.
+ * Die mitgeführte Lage entsteht, indem Bild für Bild eine Bewegung
+ * aufmultipliziert wird; würde dabei jedes Mal normiert, hinge das Ergebnis an
+ * einer Zahl, die für eine Affine ohnehin eins ist und für eine Homographie
+ * beliebig sein darf.
+ */
+export function compose(a: number[], b: number[]): number[] {
+  const out = new Array<number>(9).fill(0);
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      let sum = 0;
+      for (let k = 0; k < 3; k++) sum += a[r * 3 + k] * b[k * 3 + c];
+      out[r * 3 + c] = sum;
+    }
+  }
+  return out;
+}
+
+/** Abbildung, die alle Koordinaten um `factor` streckt. */
+export function scaleMatrix(factor: number): number[] {
+  return [factor, 0, 0, 0, factor, 0, 0, 0, 1];
+}
+
+/**
+ * Der Massstab einer Abbildung: wie stark sie Flächen vergrössert, als Länge.
+ * Aus der Determinante des linearen Teils, also unabhängig von der Drehung.
+ */
+export function linearScale(m: number[]): number {
+  return Math.sqrt(Math.abs(m[0] * m[4] - m[1] * m[3]));
+}
+
+/** Drehung einer Abbildung in Grad. */
+export function rotationOf(m: number[]): number {
+  return (Math.atan2(m[3], m[0]) * 180) / Math.PI;
+}
+
 /** Abstand zwischen abgebildetem und gemessenem Punkt. */
 export function residual(h: number[], from: Pt, to: Pt): number {
   const denom = h[6] * from.x + h[7] * from.y + h[8];
@@ -174,17 +275,39 @@ function inverseSimilarity(t: number[]): number[] {
   return [1 / s, 0, -t[2] / s, 0, 1 / s, -t[5] / s, 0, 0, 1];
 }
 
+/** Verkettung, danach auf h₈ = 1 gebracht, damit sich Ergebnisse vergleichen lassen. */
 function multiply(a: number[], b: number[]): number[] {
-  const out = new Array<number>(9).fill(0);
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 3; c++) {
-      let sum = 0;
-      for (let k = 0; k < 3; k++) sum += a[r * 3 + k] * b[k * 3 + c];
-      out[r * 3 + c] = sum;
+  const out = compose(a, b);
+  return out[8] === 0 ? out : out.map((v) => v / out[8]);
+}
+
+/** Gauss-Elimination für das kleine 3×3-System der Affine. */
+function solveSmall(a: Float64Array[], b: Float64Array): Float64Array | null {
+  const m = a.map((r) => Float64Array.from(r));
+  const rhs = Float64Array.from(b);
+
+  for (let col = 0; col < 3; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < 3; r++) if (Math.abs(m[r][col]) > Math.abs(m[pivot][col])) pivot = r;
+    if (Math.abs(m[pivot][col]) < 1e-12) return null;
+    [m[col], m[pivot]] = [m[pivot], m[col]];
+    const t = rhs[col];
+    rhs[col] = rhs[pivot];
+    rhs[pivot] = t;
+
+    const d = m[col][col];
+    for (let k = col; k < 3; k++) m[col][k] /= d;
+    rhs[col] /= d;
+
+    for (let r = 0; r < 3; r++) {
+      if (r === col) continue;
+      const f = m[r][col];
+      if (f === 0) continue;
+      for (let k = col; k < 3; k++) m[r][k] -= f * m[col][k];
+      rhs[r] -= f * rhs[col];
     }
   }
-  // Auf h₈ = 1 bringen, damit sich Ergebnisse vergleichen lassen.
-  return out[8] === 0 ? out : out.map((v) => v / out[8]);
+  return rhs;
 }
 
 function median(values: number[]): number {
