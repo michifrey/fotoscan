@@ -115,6 +115,29 @@ export function flatTexture(width: number, height: number, r: number, g: number,
   return img;
 }
 
+/**
+ * Karton mit feinem Rauschen – die Albumseite selbst. Anders als eine glatte
+ * Füllfarbe streut sie über mehrere Farbfächer, so wie es eine mit dem
+ * Telefon abfotografierte Seite tut.
+ */
+export function kartonTexture(
+  width: number,
+  height: number,
+  color: [number, number, number],
+  seed: number,
+): RgbaImage {
+  const img = createRgba(width, height);
+  const rnd = lcg(seed);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const noise = (rnd() - 0.5) * 10;
+    img.data[i] = color[0] + noise;
+    img.data[i + 1] = color[1] + noise;
+    img.data[i + 2] = color[2] + noise;
+    img.data[i + 3] = 255;
+  }
+  return img;
+}
+
 /** Handschriftähnliche Striche – dünn, dunkel, in einer Zeile. */
 export function drawHandwriting(
   img: RgbaImage,
@@ -156,9 +179,10 @@ function stroke(img: RgbaImage, x: number, y: number): void {
 
 /**
  * Ein Foto, das selbst eine grosse helle Fläche enthält – eine Bettdecke, ein
- * bewölkter Himmel. Die Fläche liegt im Inneren, mit Bildinhalt ringsum: Genau
- * so sieht es auf einem echten Abzug aus, und genau daran zerbricht eine reine
- * Farbtrennung, wenn sie die Stelle nicht als Loch im Foto begreift.
+ * bewölkter Himmel. Die Fläche liegt im Inneren, hat einen unregelmässigen,
+ * weichen Rand und Bildinhalt ringsum: Genau so sieht es auf einem echten
+ * Abzug aus, und genau daran zerbricht eine reine Farbtrennung, wenn sie die
+ * Stelle nicht als Teil des Fotos begreift.
  */
 export function photoWithPaleArea(
   width: number,
@@ -168,18 +192,24 @@ export function photoWithPaleArea(
 ): RgbaImage {
   const img = photoTexture(width, height, seed);
   const rnd = lcg(seed * 13);
-  const x0 = Math.round(width * 0.18);
-  const x1 = Math.round(width * 0.62);
-  const y0 = Math.round(height * 0.2);
-  const y1 = Math.round(height * 0.82);
+  const cx = width * 0.4;
+  const cy = height * 0.51;
+  const rx = width * 0.24;
+  const ry = height * 0.33;
 
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      // Ein gewellter Rand statt einer Kante: eine Bettdecke hat keine Ecken.
+      const angle = Math.atan2((y - cy) / ry, (x - cx) / rx);
+      const wobble = 1 + 0.18 * Math.sin(3 * angle + seed) + 0.1 * Math.cos(5 * angle - seed);
+      const d = Math.sqrt(((x - cx) / (rx * wobble)) ** 2 + ((y - cy) / (ry * wobble)) ** 2);
+      if (d > 1) continue;
+      const blend = Math.min(1, (1 - d) * 12);
       const i = (y * width + x) * 4;
-      const noise = (rnd() - 0.5) * 8;
-      img.data[i] = pale[0] + noise;
-      img.data[i + 1] = pale[1] + noise;
-      img.data[i + 2] = pale[2] + noise;
+      for (let c = 0; c < 3; c++) {
+        const noise = (rnd() - 0.5) * 8;
+        img.data[i + c] = img.data[i + c] * (1 - blend) + (pale[c] + noise) * blend;
+      }
     }
   }
   return img;

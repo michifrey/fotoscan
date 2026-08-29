@@ -1,5 +1,6 @@
 import { boxBlur, downscaleRgba, toGray } from './gray';
-import { estimateBackground, foregroundMask } from './background';
+import { estimateBackground, foregroundMask, isBackgroundColor } from './background';
+import type { Background, Limits } from './background';
 import {
   close,
   componentBoundary,
@@ -50,13 +51,31 @@ const CHILD_INSET = 0.012;
  * liefert nur seine Bildinhalte, nicht seine Ränder.
  */
 const BACKGROUND_MIN = 0.3;
-const PAGE_MIN = 0.5;
+
+/**
+ * So wenig gleichmässige Fläche muss ein Bereich mindestens haben, damit sich
+ * das Hineinsuchen lohnt. Bewusst niedrig: Eine dicht belegte Albumseite lässt
+ * kaum Papier stehen, und eine Schwelle von der Hälfte gab genau solche Seiten
+ * als ein einziges grosses Foto aus. Ob die Unterteilung echt ist, entscheidet
+ * deshalb nicht diese Zahl, sondern das Ergebnis – siehe `plausibleChildren`.
+ */
+const PAGE_MIN = 0.12;
 
 /**
  * Grösste Fläche, die noch als Loch innerhalb eines Fotos durchgeht. Alles
  * Grössere ist die Albumseite selbst, eingefasst vom Tisch.
  */
 const HOLE_MAX = 0.15;
+
+/** Kantenlänge der Stichprobe, mit der eine Fläche auf Papierfarbe geprüft wird. */
+const PAPER_SAMPLE = 32;
+
+/**
+ * Ab diesem Anteil Papierfarbe gilt eine Fläche als Papier, nicht als Foto.
+ * Auf echten Albumseiten liegen die Fotos bei unter zwei Zehnteln – der Abstand
+ * ist also gross, auch wenn ein Foto viel Helles enthält.
+ */
+const PAPER_SHARE = 0.5;
 
 /**
  * Nicht gesetzte Felder auf die Vorgabe zurückführen. Ein einfaches Spreizen
@@ -79,7 +98,14 @@ function resolve(options: DetectOptions): Required<DetectOptions> {
 export function detectPhotoQuads(img: RgbaImage, options: DetectOptions = {}): Quad[] {
   const opts = resolve(options);
   const { image: small, scale } = downscaleRgba(img, opts.analysisSize);
-  return dedupe(detectIn(small, 0, opts).map((q) => scaleQuad(q, scale)));
+  const found = detectIn(small, 0, opts, []).map((q) => scaleQuad(q, scale));
+
+  // Mindestgrösse, gemessen am ganzen Bild. Innerhalb einer Teilfläche wirkt
+  // ein Krümel gross; gemessen an der Aufnahme ist er keiner. Ohne diese
+  // Schranke rutschen beim Hineinsuchen einzelne Bildinhalte als eigene
+  // „Fotos" durch.
+  const smallest = img.width * img.height * opts.minAreaFraction;
+  return dedupe(found.filter((q) => polygonArea(q) >= smallest));
 }
 
 /**
@@ -92,16 +118,28 @@ export function detectPhotoQuads(img: RgbaImage, options: DetectOptions = {}): Q
  * 2. Über Kanten. Greift, wenn es keinen erkennbaren Untergrund gibt – etwa
  *    bei einem Foto, das fast das ganze Bild füllt.
  */
-function detectIn(img: RgbaImage, depth: number, opts: Required<DetectOptions>): Quad[] {
+function detectIn(
+  img: RgbaImage,
+  depth: number,
+  opts: Required<DetectOptions>,
+  known: Limits[],
+  /** Bereits berechnet, wenn der Aufrufer die Fläche schon geprüft hat. */
+  ready?: { gray: GrayImage; background: Background },
+): Quad[] {
   if (img.width < 48 || img.height < 48) return [];
-  const gray = toGray(img);
+  const gray = ready ? ready.gray : toGray(img);
+  const background = ready ? ready.background : estimateBackground(img, gray);
 
-  let regions = backgroundQuads(img, gray, depth, opts);
+  const carries = background.fraction >= BACKGROUND_MIN;
+  let regions = carries ? backgroundQuads(img, background, depth, opts) : [];
   if (regions.length === 0) regions = edgeQuads(gray, opts);
 
+  // Trägt diese Ebene einen erkennbaren Untergrund, merken wir ihn uns: Weiter
+  // innen verrät er, welche Fläche in Wahrheit Papier ist.
+  const surfaces = carries ? [...known, background] : known;
   const results: Quad[] = [];
   for (const quad of regions) {
-    const children = depth < opts.maxDepth ? childQuads(img, quad, polygonArea(quad), depth, opts) : [];
+    const children = depth < opts.maxDepth ? childQuads(img, quad, polygonArea(quad), depth, opts, surfaces) : [];
     if (children.length > 0) results.push(...children);
     else results.push(quad);
   }
@@ -111,13 +149,10 @@ function detectIn(img: RgbaImage, depth: number, opts: Required<DetectOptions>):
 /** Weg 1: alles, was sich farblich vom Untergrund abhebt. */
 function backgroundQuads(
   img: RgbaImage,
-  gray: GrayImage,
+  background: Background,
   depth: number,
   opts: Required<DetectOptions>,
 ): Quad[] {
-  const background = estimateBackground(img, gray);
-  if (background.fraction < BACKGROUND_MIN) return [];
-
   // Öffnen entfernt, was dünner ist als ein Foto: Beschriftung, Fusseln,
   // Papierstruktur. Der Radius ist an einer echten Albumseite eingestellt –
   // kleiner, und eine danebenstehende Bildunterschrift bleibt am Foto kleben
@@ -288,6 +323,7 @@ function childQuads(
   parentArea: number,
   depth: number,
   opts: Required<DetectOptions>,
+  known: Limits[],
 ): Quad[] {
   const inner = shrinkQuad(quad, CHILD_INSET);
   const size = outputSize(inner, opts.analysisSize);
@@ -295,12 +331,18 @@ function childQuads(
 
   const warped = warpPerspective(img, inner, size.width, size.height);
 
-  // Nur in Flächen hineinsuchen, die wie eine Albumseite aussehen. Ein Foto
-  // besteht aus Bildinhalt, nicht aus gleichmässigem Untergrund – wer darin
-  // weitersucht, findet seine Motive statt seiner Ränder.
-  if (estimateBackground(warped, toGray(warped)).fraction < PAGE_MIN) return [];
+  // Bereiche ohne jede gleichmässige Fläche sind Bildinhalt, keine Seite.
+  const gray = toGray(warped);
+  const background = estimateBackground(warped, gray);
+  if (background.fraction < PAGE_MIN) return [];
 
-  const found = detectIn(warped, depth + 1, opts);
+  // Geprüft wird nur gegen die Untergründe der *umgebenden* Ebenen. Der
+  // Untergrund dieser Fläche selbst zählt nicht: Ein Foto darf durchaus die
+  // Farbe haben, die auf dieser Ebene am häufigsten ist – auf einer dicht
+  // belegten Seite ist das der Farbton der Fotos selbst.
+  const found = detectIn(warped, depth + 1, opts, [...known, background], { gray, background }).filter(
+    (q) => !isPaper(warped, q, known),
+  );
   if (found.length === 0) return [];
 
   const rect: Quad = [
@@ -312,13 +354,79 @@ function childQuads(
   const back = computeHomography(rect, inner);
   const mapped = found.map((q) => applyHomography(back, q) as Quad);
 
-  // Nur übernehmen, wenn die Kinder echte Unterteilungen sind und nicht bloss
-  // dieselbe Fläche noch einmal.
-  const kept = mapped.filter((q) => polygonArea(q) < parentArea * 0.86);
+  return plausibleChildren(mapped, parentArea);
+}
+
+/**
+ * Ist diese Fläche in Wahrheit Untergrund?
+ *
+ * Der schwierigste Fall auf einer Albumseite ist eine helle Stelle *im* Foto –
+ * eine Bettdecke, ein bewölkter Himmel –, die zufällig die Farbe des Papiers
+ * hat. Sie hebt sich vom übrigen Bildinhalt genauso ab wie ein Foto vom
+ * Papier, und der Zuschnitt landet dann mitten im Motiv. Die Farbe verrät sie:
+ * Wer die Farbe des Albumpapiers hat, ist Papier und kein Foto.
+ *
+ * Geprüft wird gegen alle Untergründe der umgebenden Ebenen – Tischplatte,
+ * Albumseite, Passepartout –, gemessen im Inneren der Fläche, damit ein heller
+ * Rand nicht ins Gewicht fällt.
+ */
+function isPaper(img: RgbaImage, quad: Quad, known: Limits[]): boolean {
+  const patch = warpPerspective(img, shrinkQuad(quad, 0.15), PAPER_SAMPLE, PAPER_SAMPLE);
+  return known.some((limits) => {
+    let hits = 0;
+    for (let p = 0; p < patch.data.length; p += 4) {
+      if (isBackgroundColor(limits, patch.data[p], patch.data[p + 1], patch.data[p + 2])) hits++;
+    }
+    return hits / (PAPER_SAMPLE * PAPER_SAMPLE) > PAPER_SHARE;
+  });
+}
+
+/**
+ * Sind die gefundenen Teilflächen eine echte Unterteilung?
+ *
+ * Das ist die eigentliche Entscheidung „Albumseite oder Foto?". Sie am Anteil
+ * des Papiers festzumachen trägt nicht: Eine volle Seite lässt kaum Papier
+ * stehen, ein Foto mit blassem Himmel dagegen reichlich. Am Ergebnis lässt es
+ * sich zuverlässiger ablesen – mehrere getrennte, jeweils deutlich kleinere
+ * Flächen sind eine Seite; alles andere bleibt ein Foto.
+ */
+function plausibleChildren(children: Quad[], parentArea: number): Quad[] {
+  const kept = children.filter((q) => polygonArea(q) < parentArea * 0.86);
   if (kept.length === 0) return [];
+
+  // Ein einzelnes Kind muss deutlich kleiner sein als sein Elternteil, sonst
+  // ist es dieselbe Fläche noch einmal.
+  if (kept.length === 1 && polygonArea(kept[0]) > parentArea * 0.7) return [];
+
+  // Zusammen müssen sie einen wesentlichen Teil der Fläche ausmachen.
   const sum = kept.reduce((acc, q) => acc + polygonArea(q), 0);
-  if (sum < parentArea * 0.12) return [];
+  if (sum < parentArea * 0.25) return [];
+
+  // Und sie dürfen einander nicht überlappen – Fotos liegen nebeneinander,
+  // Bildinhalte ineinander.
+  for (let i = 0; i < kept.length; i++) {
+    for (let j = i + 1; j < kept.length; j++) {
+      if (overlaps(kept[i], kept[j])) return [];
+    }
+  }
   return kept;
+}
+
+/** Grobe Überlappungsprüfung über die umschliessenden Rechtecke. */
+function overlaps(a: Quad, b: Quad): boolean {
+  const box = (q: Quad) => ({
+    minX: Math.min(...q.map((p) => p.x)),
+    maxX: Math.max(...q.map((p) => p.x)),
+    minY: Math.min(...q.map((p) => p.y)),
+    maxY: Math.max(...q.map((p) => p.y)),
+  });
+  const x = box(a);
+  const y = box(b);
+  const w = Math.min(x.maxX, y.maxX) - Math.max(x.minX, y.minX);
+  const h = Math.min(x.maxY, y.maxY) - Math.max(x.minY, y.minY);
+  if (w <= 0 || h <= 0) return false;
+  const smaller = Math.min((x.maxX - x.minX) * (x.maxY - x.minY), (y.maxX - y.minX) * (y.maxY - y.minY));
+  return (w * h) / Math.max(1, smaller) > 0.25;
 }
 
 /** Entfernt Mehrfachfunde derselben Fläche (z. B. Rahmen und Foto darin). */
