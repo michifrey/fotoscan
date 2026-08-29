@@ -14,11 +14,14 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
   separat zu. Ein einzelnes Foto auf dem Tisch funktioniert genauso.
 - **Perspektive korrigieren.** Schräg aufgenommene Bilder werden auf ein
   Rechteck entzerrt, inklusive Drehung.
-- **Entspiegeln über vier Punkte.** Nach dem Auslösen erscheinen vier Punkte
-  im Bild. Das Telefon wird nacheinander zu jedem geneigt, und an jedem Punkt
-  entsteht eine Aufnahme. Weil eine Spiegelung mit dem Blickwinkel über das
-  Foto wandert, sitzt sie in jeder der fünf Aufnahmen woanders und fällt beim
-  Verrechnen als heller Ausreisser heraus.
+- **Entspiegeln über vier Punkte.** Nach dem Auslösen erscheinen vier Punkte –
+  nicht auf dem Bildschirm, sondern auf dem Album selbst: Sie liegen dort, wo
+  die App das Motiv sieht, und wandern mit ihm mit. Das Telefon wird
+  nacheinander zu jedem geneigt, und an jedem Punkt entsteht eine Aufnahme.
+  Weil eine Spiegelung mit dem Blickwinkel über das Foto wandert, sitzt sie in
+  jeder der fünf Aufnahmen woanders und fällt beim Verrechnen als heller
+  Ausreisser heraus. Verliert die Kamera das Album aus dem Blick, wird nicht
+  ausgelöst – sonst entstünden vier Aufnahmen vom Tisch.
 - **Aufhellen.** Tonwerte spreizen, leicht nachschärfen und – abschaltbar – den
   Gelbstich vergilbter Abzüge abschwächen.
 - **Objektiv wählen.** Moderne Telefone haben mehrere Rückkameras, und der
@@ -34,11 +37,15 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
 ## Bedienung
 
 1. Album anlegen (zum Beispiel „Ferien 1978“).
-2. Auf **Scannen** tippen und die Albumseite formatfüllend ins Bild nehmen.
-   Bei ruhiger Kameraführung löst die App von selbst aus.
+2. Auf **Scannen** tippen und die Albumseite ins Bild nehmen, mit etwas Luft
+   ringsum. Der Sucher sagt, woran es noch fehlt – nichts erkannt, ein Foto
+   reicht bis an den Bildrand, Kamera noch unruhig. Erst wenn nichts mehr
+   dagegen spricht, löst die App von selbst aus.
 3. Die vier Punkte der Reihe nach anfahren: Telefon leicht nach oben, rechts,
-   unten und links neigen. Jeder Punkt hakt sich ab, sobald der Ring darauf
-   liegt. **Fertig** bricht früher ab und rechnet mit dem, was da ist.
+   unten und links neigen – das Album dabei im Bild behalten. Jeder Punkt hakt
+   sich ab, sobald der Ring darauf liegt. Blasst der Punktekranz ab, ist das
+   Album aus dem Blick geraten; dann wird nichts aufgenommen, bis es wieder da
+   ist. **Fertig** bricht früher ab und rechnet mit dem, was da ist.
 4. Im Schritt **Zuschnitt prüfen** einzelne Fotos über das Häkchen abwählen,
    Ecken bei Bedarf nachziehen, drehen, speichern.
 5. Über **Exportieren** wandert das ganze Album auf den Rechner oder in eine
@@ -71,11 +78,12 @@ kein WASM-Download. Die Pipeline liegt in [`src/lib/imaging/`](src/lib/imaging):
 | Flächen bestimmen | `mask.ts` | vom Bildrand fluten; was übrig bleibt, ist von einer geschlossenen Kante umgeben |
 | Viereck annähern | `geometry.ts` | konvexe Hülle, Douglas-Peucker auf genau vier Ecken |
 | Entzerren | `warp.ts` | Homographie über ein 8×8-Gleichungssystem, bilineare Abtastung |
+| Motiv verfolgen | `track.ts` | Muster der Grundaufnahme über normierte Kreuzkorrelation wiederfinden |
 | Aufnahmen zuordnen | `detect.ts`, `stack.ts` | jede Aufnahme einzeln erkennen und ihr Viereck der Grundaufnahme zuordnen |
 | Entspiegeln | `destack.ts` | Aufnahmen ausrichten, pro Pixel den mittleren Helligkeitswert nehmen |
 | Aufhellen | `enhance.ts` | Tonwertspreizung über die Helligkeit, Grauwelt-Weissabgleich, Unschärfemaske |
 
-Drei Punkte, die den Unterschied machen:
+Vier Punkte, die den Unterschied machen:
 
 - **Verschachtelte Suche.** Wird eine grosse Fläche gefunden, sucht die App
   darin weiter. Die Albumseite auf dem Tisch ist also nur die Zwischenstufe;
@@ -94,6 +102,15 @@ Drei Punkte, die den Unterschied machen:
   Grundaufnahme zugeordnet. Bei kräftiger Bewegung halbiert das den Fehler
   gegenüber dem gemeinsamen Viereck; wird ein Foto in einer Aufnahme nicht
   sicher wiedergefunden, bleibt diese Aufnahme aussen vor.
+- **Punkte am Motiv, nicht am Bildschirm.** Aus der Grundaufnahme wird der
+  Bereich der erkannten Fotos als kleines Graumuster gemerkt und in jedem
+  Vorschaubild über die normierte Kreuzkorrelation wiedergesucht – die ist
+  unabhängig von Helligkeit und Kontrast, und der grobe Raster verzeiht den
+  Perspektivwechsel, den das Neigen mit sich bringt. Das liefert zweierlei:
+  die Stelle, an der die vier Punkte zu zeichnen sind, und die Antwort auf die
+  Frage, ob überhaupt noch dasselbe Motiv vor der Kamera liegt. Ohne diese
+  Antwort ist jede Neigung gleich viel wert – auch die, bei der das Telefon
+  längst woandershin zeigt. Genau daran entstanden Aufnahmereihen vom Tisch.
 
 Die schweren Schritte laufen in einem Web Worker
 ([`src/worker/pipeline.worker.ts`](src/worker/pipeline.worker.ts)); scheitert
@@ -120,7 +137,9 @@ einbinden.
   dunkler Seite, Leserichtung, der Griff durch die Albumseite hindurch, das
   Entfernen wandernder Spiegelungen und der Zuschnitt ohne hellen Saum. Dazu
   eine Aufnahmereihe mit bewegter Kamera, die belegt, dass die Zuordnung je
-  Aufnahme das Ergebnis messbar verbessert.
+  Aufnahme das Ergebnis messbar verbessert, sowie das Wiederfinden des Motivs
+  über Verschiebung, Drehung, Grösse und Helligkeit hinweg – samt der Fälle,
+  in denen es als verloren gelten muss.
 - `e2e/` fährt in Chromium zwei Wege ab. Ohne Kameraerlaubnis: Album anlegen,
   Albumseite über „Galerie" öffnen, drei erkannte Fotos, eines abwählen,
   speichern, Neustart überstehen. Mit künstlichem Kamerabild: auslösen, die
