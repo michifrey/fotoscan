@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Album, Page, Scan } from '../lib/storage';
+import type { Restored } from '../lib/backup';
 import { exportAlbum, exportBook, scanFileName, shareOrDownload } from '../lib/export';
 import { PhotoGrid } from './PhotoGrid';
+import { RemoteSheet } from './RemoteSheet';
 import { PhotoViewer } from './PhotoViewer';
 import { BackIcon, Button, Empty, IconButton, Switch, TopBar } from './ui';
 
@@ -17,6 +19,8 @@ interface Props {
   onReorder: (scans: Scan[]) => Promise<void>;
   onRename: (name: string) => Promise<void>;
   onDeleteAlbum: () => Promise<void>;
+  onRemote: (remote: { owner: string; repo: string }) => Promise<void>;
+  onRestored: (remote: { owner: string; repo: string }, restored: Restored) => Promise<void>;
 }
 
 type View = 'fotos' | 'seiten';
@@ -32,6 +36,8 @@ export function AlbumScreen({
   onReorder,
   onRename,
   onDeleteAlbum,
+  onRemote,
+  onRestored,
 }: Props) {
   const [view, setView] = useState<View>('fotos');
   const [query, setQuery] = useState('');
@@ -40,6 +46,7 @@ export function AlbumScreen({
   const [exporting, setExporting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [withPages, setWithPages] = useState(true);
+  const [remoteOpen, setRemoteOpen] = useState(false);
 
   const urls = useMemo(() => new Map(scans.map((scan) => [scan.id, URL.createObjectURL(scan.blob)])), [scans]);
   useEffect(() => () => urls.forEach((url) => URL.revokeObjectURL(url)), [urls]);
@@ -268,11 +275,32 @@ export function AlbumScreen({
             <Button className="w-full" data-testid="export-zip" onClick={() => void run(() => exportAlbum(album, scans))}>
               Als einzelne Bilder (ZIP)
             </Button>
+            <Button
+              className="w-full"
+              data-testid="remote-open"
+              onClick={() => {
+                setExporting(false);
+                setRemoteOpen(true);
+              }}
+            >
+              Auf GitHub sichern{album.remote ? ` (${album.remote.owner}/${album.remote.repo})` : ''}
+            </Button>
             <Button className="w-full" onClick={() => setExporting(false)}>
               Abbrechen
             </Button>
           </div>
         </div>
+      )}
+
+      {remoteOpen && (
+        <RemoteSheet
+          album={album}
+          scans={scans}
+          pages={pages}
+          onClose={() => setRemoteOpen(false)}
+          onSaved={onRemote}
+          onRestored={onRestored}
+        />
       )}
 
       {openIndex >= 0 && (

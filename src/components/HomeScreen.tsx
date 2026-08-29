@@ -10,9 +10,10 @@ interface Props {
   covers: Map<string, Blob>;
   onOpen: (album: Album) => void;
   onCreate: (name: string) => Promise<void>;
+  onFetch: () => void;
 }
 
-export function HomeScreen({ albums, counts, covers, onOpen, onCreate }: Props) {
+export function HomeScreen({ albums, counts, covers, onOpen, onCreate, onFetch }: Props) {
   const [name, setName] = useState('');
   const [usage, setUsage] = useState<string | null>(null);
   const [coverUrls, setCoverUrls] = useState<Map<string, string>>(new Map());
@@ -63,6 +64,17 @@ export function HomeScreen({ albums, counts, covers, onOpen, onCreate }: Props) 
         </Button>
       </form>
 
+      <div className="px-5 pb-4">
+        <button
+          type="button"
+          onClick={onFetch}
+          data-testid="fetch-album"
+          className="text-xs text-stone-400 underline underline-offset-4 hover:text-stone-200"
+        >
+          Album aus einer GitHub-Sicherung holen
+        </button>
+      </div>
+
       {albums.length === 0 ? (
         <Empty
           title="Noch keine Alben"
@@ -87,6 +99,7 @@ export function HomeScreen({ albums, counts, covers, onOpen, onCreate }: Props) 
                   <span className="block text-xs text-stone-400">
                     {counts.get(album.id) ?? 0} {(counts.get(album.id) ?? 0) === 1 ? 'Foto' : 'Fotos'} ·{' '}
                     {new Date(album.createdAt).toLocaleDateString('de-CH')}
+                    {album.remote && ` · ${album.remote.owner}/${album.remote.repo}`}
                   </span>
                 </span>
               </button>

@@ -61,6 +61,10 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
 - **Als Fotobuch weitergeben.** Das ganze Album als PDF: Deckblatt, ein Foto je
   Seite, die Beschriftung darunter, auf Wunsch die Albumseiten dazwischen. Oder
   weiterhin als ZIP mit den einzelnen Bildern.
+- **Sichern auf GitHub.** Je Album ein eigenes privates Repository: die Fotos
+  als JPEG, daneben eine `album.json` mit Titeln, Daten, Notizen und der
+  Reihenfolge. Damit ist die Sicherung vollständig, das zweite Gerät holt sich
+  dasselbe Album, und beim zweiten Sichern geht nur hoch, was sich geändert hat.
 - **Offline.** Nach dem ersten Aufruf läuft die App als installierte PWA ohne
   Internetverbindung.
 
@@ -84,7 +88,9 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
 6. Im Album: tippen zum Ansehen, **Ordnen** zum Umsortieren, **Beschriften**
    für Titel, Datum und Notiz, das Suchfeld zum Wiederfinden.
 7. Über **Weitergeben** wandert das Album als Fotobuch (PDF) oder als ZIP auf
-   den Rechner oder in eine andere App.
+   den Rechner oder in eine andere App – oder als Sicherung in ein privates
+   GitHub-Repository. Von dort holt es sich ein zweites Gerät über **Album aus
+   einer GitHub-Sicherung holen** auf der Startseite.
 
 Ohne Kamerazugriff – etwa am Rechner – lässt sich über **Galerie** ein
 vorhandenes Bild öffnen und genauso verarbeiten.
@@ -175,6 +181,41 @@ Fünf Punkte, die den Unterschied machen:
   Aufnahmen nicht zueinander – falsches Foto erwischt –, verrät das ihr
   Zusammenhang, und die Nahaufnahme bleibt, wie sie ist.
 
+## Sichern
+
+Alles liegt im Gerät, und ein gelöschter Websitespeicher nimmt es mit. Dagegen
+steht [`src/lib/github.ts`](src/lib/github.ts): ein Album in ein eigenes,
+privates Repository sichern und von dort zurückholen.
+
+So sieht es dort aus:
+
+```
+album.json                  Titel, Daten, Notizen, Reihenfolge, Seitenzuordnung
+fotos/0001-Oma-im-Garten.jpg
+handschrift/0001-Oma-im-Garten.jpg
+seiten/001-<id>.jpg         die Übersichtsaufnahmen der Albumseiten
+```
+
+Hochgeladen wird nicht Datei für Datei über die Contents-Schnittstelle, sondern
+als Git-Baum: fehlende Inhalte, dann ein Baum, dann ein Commit. Das ergibt je
+Sicherung genau einen Eintrag in der Geschichte – und der zweite Lauf lädt fast
+nichts mehr hoch, denn die Prüfsumme, die Git einer Datei gibt (SHA-1 über
+`blob <Länge>\0` und den Inhalt), lässt sich im Browser ausrechnen und mit dem
+vergleichen, was schon oben liegt. Ein Modultest hält sie gegen `git
+hash-object`; stimmte sie nicht, ginge bei jedem Sichern das ganze Album erneut
+über die Leitung.
+
+Der Baum wird vollständig neu geschrieben, ohne `base_tree`. Damit ist das
+Repository ein Abbild des Albums und keine Halde alter Fassungen: Was hier
+gelöscht wurde, ist auch dort weg – in der Geschichte steht es weiterhin.
+
+Der Token bleibt auf dem Gerät und steht bewusst nicht beim Album: Ein Album
+wird weitergegeben und exportiert, ein Zugangsschlüssel soll dabei nicht
+mitwandern. Fein abgestuft, nur für dieses Repository, nur `Contents: Lesen und
+Schreiben`. Die Grenzen von GitHub passen zur Aufgabe: 100 MB je Datei, unter
+5 GB je Repository – ein Album mit 500 Fotos liegt bei rund 1,5 GB, und deshalb
+bekommt jedes Album sein eigenes.
+
 ## Die Handschrift
 
 Sie steht auf [`src/lib/imaging/writing.ts`](src/lib/imaging/writing.ts) und geht
@@ -258,6 +299,10 @@ einbinden.
   nebeneinander, die Zeile zwischen zwei Fotos, eine Seite ganz ohne
   Handschrift, eine Zeile weitab von jedem Foto – und ein Ausschnitt, der die
   Nachbarfotos draussen lässt.
+- Für die Sicherung: die Prüfsumme gegen `git hash-object`, der Weg vom Album
+  in Dateien und zurück, das Anlegen des Zweigs im leeren Repository, und dass
+  ein zweites Sichern nur die geänderte Datei hochlädt – geprüft an einem
+  GitHub, das nur im Speicher lebt.
 - `e2e/` fährt in Chromium zwei Wege ab. Ohne Kameraerlaubnis: Album anlegen,
   Albumseite über „Galerie" öffnen, drei erkannte Fotos, eines abwählen,
   speichern, Neustart überstehen. Mit künstlichem Kamerabild: auslösen, die
@@ -266,7 +311,10 @@ einbinden.
   antwortet. Dazu die Runde der Nahaufnahmen: der Reihe nach durchgehen,
   überspringen, abbrechen. Und das Album: beschriften, suchen, umsortieren per
   Ziehen, die Seitenansicht, die Handschrift beim Foto, das Fotobuch
-  herunterladen und die Erweiterung der alten Datenbank.
+  herunterladen und die Erweiterung der alten Datenbank. Dazu die ganze Runde
+  der Sicherung gegen ein nachgestelltes GitHub: sichern, Datenbank und Token
+  löschen, auf dem leeren Gerät wiederherstellen – mit Beschriftung, Seiten und
+  Handschrift.
 
 ## Veröffentlichen
 

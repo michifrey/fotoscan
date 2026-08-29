@@ -8,6 +8,8 @@ export interface Album {
   id: string;
   name: string;
   createdAt: number;
+  /** Wohin dieses Album gesichert wird. Der Token steht nicht hier – siehe `remote.ts`. */
+  remote?: { owner: string; repo: string };
 }
 
 export interface Scan {
@@ -192,6 +194,28 @@ export async function addPage(page: Omit<Page, 'id' | 'createdAt' | 'order'> & {
 
 export async function deletePage(id: string): Promise<void> {
   await run(PAGES, 'readwrite', (store) => store.delete(id));
+}
+
+/** Merkt sich, wohin dieses Album gesichert wird. */
+export async function setRemote(album: Album, remote: Album['remote']): Promise<Album> {
+  const updated = { ...album, remote };
+  await run(ALBUMS, 'readwrite', (store) => store.put(updated));
+  return updated;
+}
+
+/**
+ * Schreibt ein Foto so, wie es ist – mit seiner Kennung.
+ *
+ * Beim Wiederherstellen zählt genau das: Nur wenn die Kennungen erhalten
+ * bleiben, finden die Fotos ihre Albumseite wieder, und ein zweites
+ * Wiederherstellen legt nichts doppelt an.
+ */
+export async function putScan(scan: Scan): Promise<void> {
+  await run(SCANS, 'readwrite', (store) => store.put(scan));
+}
+
+export async function putPage(page: Page): Promise<void> {
+  await run(PAGES, 'readwrite', (store) => store.put(page));
 }
 
 export async function updateScan(scan: Scan): Promise<void> {
