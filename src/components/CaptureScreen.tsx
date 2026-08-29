@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCamera, wait } from '../lib/camera';
 import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { orientationSupported, requestOrientationAccess, useTilt } from '../lib/orientation';
-import { imageDataFromBlob } from '../lib/canvas';
+import { blobFromImageData, imageDataFromBlob } from '../lib/canvas';
 import { framing, framingText } from '../lib/framing';
 import type { Framing } from '../lib/framing';
 import { exposureOf } from '../lib/imaging/exposure';
@@ -16,9 +16,26 @@ import { BackIcon, Button, IconButton } from './ui';
 import { QuadEditor } from './QuadEditor';
 import { CAPTURE_RADIUS, GuidedCapture, TARGETS, distanceToTarget } from './GuidedCapture';
 import { CameraSettings, GearIcon } from './CameraSettings';
+import { SheetScanScreen } from './SheetScanScreen';
+import type { SweepTile } from './SheetScanScreen';
 
 export interface Shot {
   frames: ImageData[];
+  quads: Quad[];
+  /**
+   * Die Kacheln eines Blatt-Scans: Nahaufnahmen der Seite mit ihrer Lage
+   * darauf. Aus ihnen werden die Fotos später zusammengesetzt.
+   */
+  sweep?: SweepTile[];
+}
+
+/** Wie eine Seite aufgenommen wird. */
+type Mode = 'entspiegeln' | 'einzel' | 'blatt';
+
+/** Die Übersicht, an der ein laufender Blatt-Scan hängt. */
+interface Sheet {
+  overview: ImageData;
+  url: string;
   quads: Quad[];
 }
 
@@ -51,10 +68,14 @@ interface GuidedState {
 export function CaptureScreen({ albumName, onShot, onBack }: Props) {
   const [deviceId, setDeviceId] = useState<string | null>(() => rememberedCamera());
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const camera = useCamera(true, deviceId);
+  const [sheet, setSheet] = useState<Sheet | null>(null);
+  // Beim Blatt-Scan gibt der Sucher die Kamera ab: Zwei offene Ströme auf
+  // dasselbe Objektiv verträgt nicht jedes Telefon.
+  const camera = useCamera(sheet === null, deviceId);
   const [quads, setQuads] = useState<Quad[]>([]);
   const [view, setView] = useState<Framing>('leer');
-  const [destack, setDestack] = useState(true);
+  const [mode, setMode] = useState<Mode>('entspiegeln');
+  const destack = mode === 'entspiegeln';
   const [auto, setAuto] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [aspect, setAspect] = useState(3 / 4);
@@ -189,13 +210,32 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     lastCapture.current = Date.now();
     stableCount.current = 0;
 
-    const base = camera.capture(destack ? STACK_MAX : SINGLE_MAX);
+    const base = camera.capture(mode === 'einzel' ? SINGLE_MAX : STACK_MAX);
     if (!base) {
       capturing.current = false;
       return;
     }
-    if (!destack) {
+    if (mode === 'einzel') {
       await finish([base]);
+      return;
+    }
+    if (mode === 'blatt') {
+      // Die Übersicht steht: Sie ist der Bezugsrahmen, in dem die Kacheln
+      // später ihren Platz finden, und die Karte, auf der zu sehen ist, was
+      // noch fehlt.
+      setStatus('Fotos werden gesucht …');
+      try {
+        const found = await detect(base);
+        const url = URL.createObjectURL(await blobFromImageData(base, 0.85));
+        setSheet({
+          overview: base,
+          url,
+          quads: found.length > 0 ? found : [defaultQuad(base.width, base.height)],
+        });
+      } finally {
+        setStatus(null);
+        capturing.current = false;
+      }
       return;
     }
 
@@ -212,7 +252,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     }
     resetTilt();
     setGuided({ frames: [base], done: TARGETS.map(() => false) });
-  }, [camera, destack, finish, follow, resetTilt, runTimedSeries]);
+  }, [camera, finish, follow, mode, resetTilt, runTimedSeries]);
 
   const takeShotRef = useRef(takeShot);
   takeShotRef.current = takeShot;
@@ -350,6 +390,46 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     [onShot, stopFollowing],
   );
 
+  // Die Übergabe an den Blatt-Sucher braucht einen Takt Aufschub: Erst muss
+  // der eigene Kamerastrom wirklich freigegeben sein, sonst öffnen zwei Sucher
+  // gleichzeitig dasselbe Objektiv – das verträgt nicht jedes Telefon.
+  const [handover, setHandover] = useState(false);
+  useEffect(() => {
+    if (!sheet) {
+      setHandover(false);
+      return;
+    }
+    const handle = window.setTimeout(() => setHandover(true), 0);
+    return () => window.clearTimeout(handle);
+  }, [sheet]);
+
+  const closeSheet = useCallback(() => {
+    setSheet((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return null;
+    });
+    capturing.current = false;
+    lastCapture.current = Date.now();
+  }, []);
+
+  if (sheet) {
+    return handover ? (
+      <SheetScanScreen
+        overview={sheet.overview}
+        overviewUrl={sheet.url}
+        quads={sheet.quads}
+        onCancel={closeSheet}
+        onDone={(tiles) => {
+          const { overview, quads: found } = sheet;
+          closeSheet();
+          onShot({ frames: [overview], quads: found, sweep: tiles.length > 0 ? tiles : undefined });
+        }}
+      />
+    ) : (
+      <div className="min-h-dvh bg-black" />
+    );
+  }
+
   return (
     <div className="flex min-h-dvh flex-col bg-black text-stone-100">
       <div className="relative flex flex-1 items-center justify-center overflow-hidden">
@@ -470,10 +550,13 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
 
       <div className="shrink-0 space-y-4 border-t border-white/10 bg-stone-950 px-4 pt-3 pb-6">
         <div className="flex justify-center gap-2 text-xs">
-          <Chip active={destack} onClick={() => setDestack(true)}>
+          <Chip active={mode === 'entspiegeln'} onClick={() => setMode('entspiegeln')}>
             Entspiegeln
           </Chip>
-          <Chip active={!destack} onClick={() => setDestack(false)}>
+          <Chip active={mode === 'blatt'} onClick={() => setMode('blatt')} testId="modus-blatt">
+            Blatt
+          </Chip>
+          <Chip active={mode === 'einzel'} onClick={() => setMode('einzel')}>
             Einzelbild
           </Chip>
           <Chip active={auto} onClick={() => setAuto(!auto)}>
@@ -509,23 +592,40 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
           />
 
           <div className="flex w-11 justify-center text-[11px] text-stone-500">
-            {destack ? `${TARGETS.length + 1}×` : '1×'}
+            {mode === 'entspiegeln' ? `${TARGETS.length + 1}×` : mode === 'blatt' ? 'Blatt' : '1×'}
           </div>
         </div>
 
         <p className="text-center text-[11px] leading-relaxed text-stone-500">
-          {destack
+          {mode === 'entspiegeln'
             ? 'Nach dem Auslösen vier Punkte anfahren, das Album dabei im Bild behalten. Die Spiegelung liegt dann in jeder Aufnahme woanders und wird herausgerechnet.'
-            : 'Eine einzelne Aufnahme, ohne Entspiegelung.'}
+            : mode === 'blatt'
+              ? 'Erst die ganze Seite aufnehmen, dann das Telefon flach darüber führen und näher herangehen. Aus den Kacheln entsteht ein scharfer Blatt-Scan.'
+              : 'Eine einzelne Aufnahme, ohne Entspiegelung.'}
         </p>
       </div>
     </div>
   );
 }
 
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function Chip({
+  active,
+  onClick,
+  testId,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  testId?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <Button variant={active ? 'primary' : 'ghost'} onClick={onClick} className="rounded-full px-3 py-1.5 text-xs">
+    <Button
+      variant={active ? 'primary' : 'ghost'}
+      onClick={onClick}
+      data-testid={testId}
+      className="rounded-full px-3 py-1.5 text-xs"
+    >
       {children}
     </Button>
   );

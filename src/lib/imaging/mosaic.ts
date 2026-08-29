@@ -49,6 +49,22 @@ export interface Tile {
 }
 
 /**
+ * Dieselbe Kachel, aber noch nicht ausgepackt: nur Grösse und Lage, das Bild
+ * auf Abruf.
+ *
+ * Ein Blatt-Scan bringt ein Dutzend Aufnahmen in voller Grösse mit. Sie alle
+ * gleichzeitig als Bildpunkte zu halten sprengt ein Telefon – dieselbe
+ * Disziplin, die die Nahaufnahmen-Runde schon anwendet. Ausgepackt wird eine
+ * nach der anderen, und nur die, die zu diesem Foto überhaupt etwas beitragen.
+ */
+export interface LazyTile {
+  width: number;
+  height: number;
+  pose: number[];
+  load: () => Promise<RgbaImage>;
+}
+
+/**
  * Das Foto `quad` der Übersicht, zusammengesetzt aus den Kacheln.
  *
  * Gibt `null` zurück, wenn keine Kachel etwas beizutragen hat – dann bleibt es
@@ -61,6 +77,68 @@ export function composePhoto(
   tiles: Tile[],
   maxDim = 2600,
 ): RgbaImage | null {
+  const sheet = begin(reference, quad, tiles, maxDim);
+  if (!sheet) return null;
+  for (const tile of tiles) add(sheet, tile.pose, tile.image);
+  return end(sheet);
+}
+
+/**
+ * Dasselbe, aber die Kacheln werden einzeln nachgeladen – und nur die, deren
+ * Fläche dieses Foto überhaupt berührt.
+ */
+export async function composeFromTiles(
+  reference: RgbaImage,
+  quad: Quad,
+  tiles: LazyTile[],
+  maxDim = 2600,
+): Promise<RgbaImage | null> {
+  const near = tiles.filter((tile) => touches(tile, quad));
+  const sheet = begin(reference, quad, near, maxDim);
+  if (!sheet) return null;
+  for (const tile of near) {
+    add(sheet, tile.pose, await tile.load());
+  }
+  return end(sheet);
+}
+
+/** Berührt die Fläche dieser Kachel das Foto? Über die umschliessenden Rechtecke. */
+function touches(tile: LazyTile, quad: Quad): boolean {
+  const footprint = applyHomography(tile.pose, rectOf(tile.width, tile.height)) as Quad;
+  if (footprint.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) return false;
+  const a = boundsOf(footprint);
+  const b = boundsOf(quad);
+  return a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY;
+}
+
+function boundsOf(quad: Quad) {
+  return {
+    minX: Math.min(...quad.map((p) => p.x)),
+    maxX: Math.max(...quad.map((p) => p.x)),
+    minY: Math.min(...quad.map((p) => p.y)),
+    maxY: Math.max(...quad.map((p) => p.y)),
+  };
+}
+
+/** Die Werkbank, auf der ein Foto entsteht. */
+interface Sheet {
+  out: RgbaImage;
+  best: Uint8Array;
+  dark: RgbaImage;
+  overlaps: Uint8Array;
+  rect: Quad;
+  toOverview: number[];
+  feather: number;
+  touched: boolean;
+}
+
+/** Legt die Unterlage an: die hochgezogene Seitenaufnahme in Zielgrösse. */
+function begin(
+  reference: RgbaImage,
+  quad: Quad,
+  tiles: { pose: number[] }[],
+  maxDim: number,
+): Sheet | null {
   const useful = tiles.filter((tile) => linearScale(tile.pose) > 0);
   if (useful.length === 0) return null;
 
@@ -78,48 +156,54 @@ export function composePhoto(
   const base = outputSize(quad, maxDim);
   const longest = Math.max(base.width, base.height);
   const factor = Math.min(detail, maxDim / longest);
-  const size = {
-    width: Math.max(16, Math.round(base.width * factor)),
-    height: Math.max(16, Math.round(base.height * factor)),
+  const width = Math.max(16, Math.round(base.width * factor));
+  const height = Math.max(16, Math.round(base.height * factor));
+
+  const rect = rectOf(width, height);
+  return {
+    out: warpPerspective(reference, quad, width, height),
+    best: new Uint8Array(width * height),
+    dark: createRgba(width, height),
+    overlaps: new Uint8Array(width * height),
+    rect,
+    // Die Abbildung vom fertigen Foto in die Übersicht – über sie findet jede
+    // Kachel ihren Platz.
+    toOverview: computeHomography(rect, quad),
+    feather: Math.max(2, Math.min(width, height) * FEATHER),
+    touched: false,
   };
-  const out = warpPerspective(reference, quad, size.width, size.height);
+}
 
-  // Die Abbildung vom fertigen Foto in die Übersicht – über sie findet jede
-  // Kachel ihren Platz.
-  const rect = rectOf(size.width, size.height);
-  const toOverview = computeHomography(rect, quad);
+/** Trägt eine Kachel ein. */
+function add(sheet: Sheet, pose: number[], image: RgbaImage): void {
+  const back = invert(pose);
+  if (!back) return;
 
-  const best = new Uint8Array(size.width * size.height);
-  const dark = createRgba(size.width, size.height);
-  const overlaps = new Uint8Array(size.width * size.height);
-  let touched = false;
+  // Wo liegt diese Kachel im fertigen Foto? Ihre Ecken, durch die Übersicht
+  // hindurch zurückgerechnet.
+  const toTile = compose(back, sheet.toOverview);
+  const forward = invert(toTile);
+  if (!forward) return;
+  const footprint = applyHomography(forward, rectOf(image.width, image.height)) as Quad;
 
-  for (const tile of useful) {
-    const back = invert(tile.pose);
-    if (!back) continue;
+  // Und ihr Inhalt, in denselben Rahmen entzerrt. Die vier Eckbilder von
+  // `toTile` sind genau das Viereck, mit dem `warpPerspective` schon
+  // entzerrt – ein eigener Warp ist dafür nicht nötig.
+  const inTile = applyHomography(toTile, sheet.rect) as Quad;
+  if (!inside(inTile, image.width, image.height)) return;
+  const warped = warpPerspective(image, inTile, sheet.out.width, sheet.out.height);
+  matchExposure(warped, sheet.out);
 
-    // Wo liegt diese Kachel im fertigen Foto? Ihre Ecken, durch die Übersicht
-    // hindurch zurückgerechnet.
-    const toTile = compose(back, toOverview);
-    const forward = invert(toTile);
-    if (!forward) continue;
-    const footprint = applyHomography(forward, rectOf(tile.image.width, tile.image.height)) as Quad;
-
-    // Und ihr Inhalt, in denselben Rahmen entzerrt. Die vier Eckbilder von
-    // `toTile` sind genau das Viereck, mit dem `warpPerspective` schon
-    // entzerrt – ein eigener Warp ist dafür nicht nötig.
-    const inTile = applyHomography(toTile, rect) as Quad;
-    if (!inside(inTile, tile.image.width, tile.image.height)) continue;
-    const warped = warpPerspective(tile.image, inTile, size.width, size.height);
-    matchExposure(warped, out);
-
-    const feather = Math.max(2, Math.min(size.width, size.height) * FEATHER);
-    if (place(out, best, dark, overlaps, warped, footprint, feather)) touched = true;
+  if (place(sheet.out, sheet.best, sheet.dark, sheet.overlaps, warped, footprint, sheet.feather)) {
+    sheet.touched = true;
   }
-  if (!touched) return null;
+}
 
-  settle(out, dark, overlaps);
-  return out;
+/** Schliesst ab: Glanz auflösen, wo sich zwei Kacheln überlappen. */
+function end(sheet: Sheet): RgbaImage | null {
+  if (!sheet.touched) return null;
+  settle(sheet.out, sheet.dark, sheet.overlaps);
+  return sheet.out;
 }
 
 /**

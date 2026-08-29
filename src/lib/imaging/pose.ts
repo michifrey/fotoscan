@@ -29,8 +29,21 @@ import type { GrayImage, Pt, Quad, RgbaImage } from './types';
  *   Suche um die mitgeführte Lage herum.
  */
 
-/** Kantenlänge, auf der die Karte für das Nachverankern gerechnet wird. */
+/**
+ * Kantenlänge, auf der die Karte für das Nachverankern gerechnet wird –
+ * höchstens so viel, und mindestens so viel.
+ *
+ * Die Karte wird nicht auf eine feste Grösse gerechnet, sondern auf die
+ * **Bodenauflösung des Vorschaubildes**. Ein Vorschaubild ist klein (ein paar
+ * hundert Bildpunkte auf die ganze Seite), die Übersichtsaufnahme gross; auf
+ * einer festen Karte von 900 Punkten stünde deshalb Struktur, die das
+ * Vorschaubild gar nicht hergibt, und beim Vergleich träfe ein weiches
+ * Teilstück auf ein scharfes. Genau daran scheiterte die Anfangslage: Sie ist
+ * der Fall, in dem das Vorschaubild die ganze Seite zeigt und der Unterschied
+ * am grössten ist.
+ */
 const MAP_SIZE = 900;
+const MAP_MIN = 240;
 
 /**
  * Die beiden Anläufe des Nachverankerns: erst grob und weit, dann fein und eng.
@@ -146,7 +159,11 @@ function anchor(overview: RgbaImage, frame: RgbaImage, guess: number[], reach: n
   const scale = linearScale(guess);
   if (!(scale > 0) || 1 / scale > MAX_DETAIL) return null;
 
-  const map = downscaleGray(toGray(overview), MAP_SIZE);
+  // Ein Punkt des Vorschaubildes deckt `scale` Punkte der Übersicht ab; die
+  // Karte wird deshalb um genau diesen Faktor kleiner gerechnet. Dann tragen
+  // beide Seiten dieselbe Struktur.
+  const longest = Math.max(overview.width, overview.height);
+  const map = downscaleGray(toGray(overview), Math.min(MAP_SIZE, Math.max(MAP_MIN, Math.round(longest / scale))));
   const mapWork = boxBlur(map.image, 1);
 
   // Ein Punkt des Bildes wird um `scale` auf die Übersicht vergrössert und dort

@@ -5,7 +5,7 @@ import type { Pose } from '../src/lib/imaging/pose';
 import { computeHomography, warpPerspective } from '../src/lib/imaging/warp';
 import { createRgba } from '../src/lib/imaging/types';
 import type { Quad, RgbaImage } from '../src/lib/imaging/types';
-import { drawTextureInQuad, fill, kartonTexture, rectQuad, variedPhoto } from './synth';
+import { checkerPhoto, drawTextureInQuad, fill, kartonTexture, rectQuad, variedPhoto } from './synth';
 
 /** Die Albumseite, wie sie auf dem Tisch liegt – in hoher Auflösung. */
 function sheet(seed = 1): RgbaImage {
@@ -183,6 +183,35 @@ describe('Lage fortlaufend mitführen', () => {
     const pose = startPose(overview, images[0]);
     expect(pose).not.toBeNull();
     expect(cornerError(viewport(pose!, ...FRAME), truth(quads[0], FRAME, overviewSize))).toBeLessThan(12);
+  });
+
+  it('findet die Anfangslage, obwohl die Übersicht feiner ist als die Vorschau', () => {
+    // Der Fall aus der App: Die Übersicht wird in voller Auflösung
+    // aufgenommen, mitgeführt wird auf einem winzigen Vorschaubild. Auf der
+    // Übersicht steht dann Struktur, die das Vorschaubild gar nicht mehr
+    // auflöst. Bei einem regelmässigen Muster – und ein Abzug hat oft eins –
+    // verschiebt sich dabei die Phase: Wer die Karte auf eine feste Grösse
+    // rechnet statt auf die Auflösung der Vorschau, vergleicht zwei
+    // verschiedene Muster und findet gar nichts.
+    const karo = createRgba(1400, 1000);
+    fill(karo, 40, 34, 30);
+    drawTextureInQuad(karo, kartonTexture(90, 68, [235, 232, 222], 3), rectQuad(155, 105, 1090, 780, 0));
+    drawTextureInQuad(karo, checkerPhoto(400, 300, 14), rectQuad(280, 225, 405, 305, 0));
+    drawTextureInQuad(karo, checkerPhoto(400, 300, 14), rectQuad(760, 250, 405, 300, 0));
+    drawTextureInQuad(karo, checkerPhoto(520, 260, 14), rectQuad(420, 600, 525, 265, 0));
+
+    const ganz = rect(1400, 1000);
+    const grob: [number, number] = [320, 229];
+    const uebersicht = warpPerspective(karo, ganz, 960, 686);
+    const vorschau = warpPerspective(karo, ganz, ...grob);
+
+    const pose = startPose(uebersicht, vorschau);
+    expect(pose).not.toBeNull();
+
+    // Beide zeigen dieselbe Fläche: Die Lage ist genau der Massstab zwischen
+    // ihnen, hier dreifach.
+    const soll = rect(...grob).map((p) => ({ x: p.x * (960 / 320), y: p.y * (686 / 229) })) as Quad;
+    expect(cornerError(viewport(pose!, ...grob), soll)).toBeLessThan(20);
   });
 
   it('misst die Bewegung zwischen zwei aufeinanderfolgenden Bildern', () => {

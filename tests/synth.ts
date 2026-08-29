@@ -288,3 +288,26 @@ export function variedPhoto(width: number, height: number, seed: number): RgbaIm
   }
   return img;
 }
+
+/**
+ * Ein Abzug mit gleichmässig feinem Muster – ein Karo und sonst nichts.
+ *
+ * Der unbequeme Fall für das Wiederfinden: Eine regelmässige Struktur sieht an
+ * jeder Stelle gleich aus, und sobald zwei Aufnahmen sie unterschiedlich fein
+ * auflösen, verschiebt sich ihre Phase. Wer beide Seiten nicht vorher auf
+ * dieselbe Bodenauflösung bringt, vergleicht dann zwei verschiedene Muster.
+ */
+export function checkerPhoto(width: number, height: number, period: number): RgbaImage {
+  const img = createRgba(width, height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const v = 150 + Math.cos((x / period) * Math.PI * 2) * Math.cos((y / period) * Math.PI * 2) * 70;
+      img.data[i] = v + 40;
+      img.data[i + 1] = v;
+      img.data[i + 2] = v - 40;
+      img.data[i + 3] = 255;
+    }
+  }
+  return img;
+}

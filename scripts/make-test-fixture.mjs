@@ -81,3 +81,57 @@ handschrift(285, 560, 380, 34, 5);
 mkdirSync(OUT, { recursive: true });
 writeFileSync(resolve(OUT, 'albumseite.png'), encodePng(pixels, WIDTH, HEIGHT));
 console.log('geschrieben: e2e/fixtures/albumseite.png');
+
+/*
+ * Dieselbe Seite noch einmal als Kamerabild.
+ *
+ * Chromiums eingebautes Testbild ist eine fast einfarbige grüne Fläche mit
+ * einem drehenden Kreissegment. Wer darauf eine Stelle wiederfinden will,
+ * findet nichts – zu Recht, es steht ja nichts darin. Mit
+ * `--use-file-for-fake-video-capture` liefert Chromium stattdessen den Inhalt
+ * einer Y4M-Datei: rohe Bildpunkte mit einer Zeile Kopf, mehr ist das Format
+ * nicht. Ein einziges Bild genügt, Chromium wiederholt es.
+ */
+const VIDEO_WIDTH = 960;
+const VIDEO_HEIGHT = 540;
+
+function y4mFrame() {
+  const y = new Uint8Array(VIDEO_WIDTH * VIDEO_HEIGHT);
+  const u = new Uint8Array((VIDEO_WIDTH / 2) * (VIDEO_HEIGHT / 2));
+  const v = new Uint8Array((VIDEO_WIDTH / 2) * (VIDEO_HEIGHT / 2));
+
+  // Die Seite liegt mittig auf dem Tisch, mit Rand ringsum – so, wie sie vor
+  // einer Kamera läge.
+  const factor = Math.min(VIDEO_WIDTH / WIDTH, VIDEO_HEIGHT / HEIGHT) * 0.94;
+  const left = (VIDEO_WIDTH - WIDTH * factor) / 2;
+  const top = (VIDEO_HEIGHT - HEIGHT * factor) / 2;
+
+  for (let row = 0; row < VIDEO_HEIGHT; row++) {
+    for (let col = 0; col < VIDEO_WIDTH; col++) {
+      const sx = Math.round((col - left) / factor);
+      const sy = Math.round((row - top) / factor);
+      let r = 24;
+      let g = 20;
+      let b = 18;
+      if (sx >= 0 && sy >= 0 && sx < WIDTH && sy < HEIGHT) {
+        const i = (sy * WIDTH + sx) * 4;
+        [r, g, b] = [pixels[i], pixels[i + 1], pixels[i + 2]];
+      }
+      y[row * VIDEO_WIDTH + col] = Math.round(0.257 * r + 0.504 * g + 0.098 * b + 16);
+      // Farbe steht nur an jedem zweiten Punkt – so will es I420.
+      if (row % 2 === 0 && col % 2 === 0) {
+        const j = (row / 2) * (VIDEO_WIDTH / 2) + col / 2;
+        u[j] = Math.round(-0.148 * r - 0.291 * g + 0.439 * b + 128);
+        v[j] = Math.round(0.439 * r - 0.368 * g - 0.071 * b + 128);
+      }
+    }
+  }
+  const header = Buffer.from(
+    `YUV4MPEG2 W${VIDEO_WIDTH} H${VIDEO_HEIGHT} F30:1 It A1:1 C420mpeg2\nFRAME\n`,
+    'ascii',
+  );
+  return Buffer.concat([header, Buffer.from(y), Buffer.from(u), Buffer.from(v)]);
+}
+
+writeFileSync(resolve(OUT, 'albumseite.y4m'), y4mFrame());
+console.log('geschrieben: e2e/fixtures/albumseite.y4m');

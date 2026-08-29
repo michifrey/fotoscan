@@ -6,3 +6,4 @@ playwright-report
 # Werden beim Bauen bzw. vor den Tests erzeugt.
 public/icons/*.png
 e2e/fixtures/*.png
+e2e/fixtures/*.y4m

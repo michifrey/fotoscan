@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { composePhoto } from '../src/lib/imaging/mosaic';
-import type { Tile } from '../src/lib/imaging/mosaic';
+import { composeFromTiles, composePhoto } from '../src/lib/imaging/mosaic';
+import type { LazyTile, Tile } from '../src/lib/imaging/mosaic';
 import { compose } from '../src/lib/imaging/fit';
 import { computeHomography, outputSize, warpPerspective } from '../src/lib/imaging/warp';
 import { createRgba } from '../src/lib/imaging/types';
@@ -191,6 +191,31 @@ describe('Fotos aus Kacheln zusammensetzen', () => {
     // Rechts aussen darf nichts schwarz sein.
     expect(patchLuma(composed, Math.round(composed.width * 0.92), Math.round(composed.height / 2), 20)).toBeGreaterThan(40);
     expect(meanAbsDiff(composed, truth, 12)).toBeLessThan(30);
+  });
+
+  it('packt nur die Kacheln aus, die dieses Foto berühren', async () => {
+    // Ein Dutzend Aufnahmen in voller Grösse gleichzeitig im Speicher sprengt
+    // ein Telefon. Wer weit weg liegt, wird gar nicht erst geladen – und das
+    // Ergebnis muss dasselbe sein.
+    const nah = quarters.map((quad) => tileOf(vorlage, quad, [640, 480]));
+    // Eine Kachel vom anderen Foto der Seite, die hier nichts zu suchen hat.
+    const fern = tileOf(vorlage, rectQuad(1020, 170, 400, 300, 0), [640, 480]);
+
+    const loaded: number[] = [];
+    const lazy: LazyTile[] = [...nah, fern].map((tile, index) => ({
+      width: tile.image.width,
+      height: tile.image.height,
+      pose: tile.pose,
+      load: async () => {
+        loaded.push(index);
+        return tile.image;
+      },
+    }));
+
+    const composed = await composeFromTiles(overview, photoInOverview, lazy);
+    expect(composed).not.toBeNull();
+    expect(loaded).toEqual([0, 1, 2, 3]);
+    expect(meanAbsDiff(composed!, composePhoto(overview, photoInOverview, nah)!, 0)).toBeLessThan(0.01);
   });
 
   it('gibt nichts zurück, wenn keine Kachel etwas beiträgt', () => {
