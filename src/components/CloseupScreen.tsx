@@ -3,6 +3,9 @@ import { useCamera } from '../lib/camera';
 import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { blobFromImageData } from '../lib/canvas';
 import { detect } from '../lib/pipeline';
+import { exposureOf, tooDark } from '../lib/imaging/exposure';
+import { framingText } from '../lib/framing';
+import { useAutoLight } from '../lib/light';
 import { polygonArea } from '../lib/imaging/geometry';
 import type { Quad } from '../lib/imaging/types';
 import { BackIcon, Button, IconButton } from './ui';
@@ -69,6 +72,12 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
   const fellBack = useRef(false);
   const autoRef = useRef(auto);
   autoRef.current = auto && !settingsOpen;
+
+  // Hier darf das Licht immer zugeschaltet werden: Was es an Glanz auf den
+  // Abzug wirft, nimmt die Seitenaufnahme hinterher wieder heraus – genau
+  // dafür ist sie da.
+  const { light, measure, takeOver } = useAutoLight(camera, true);
+  const [dark, setDark] = useState(false);
 
   const target = targets[position];
 
@@ -154,7 +163,11 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
             const fills =
               largest.length === 1 && polygonArea(largest[0]) >= frame.width * frame.height * FILL_MIN;
 
+            const exposure = exposureOf(frame);
+            measure(exposure);
+
             if (active) {
+              setDark(tooDark(exposure));
               setQuads((previous) => {
                 if (fills && isStable(previous, largest, Math.max(frame.width, frame.height) * 0.02)) {
                   stableCount.current += 1;
@@ -164,7 +177,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
                 return fills ? largest : [];
               });
 
-              if (autoRef.current && fills && stableCount.current >= STABLE_TICKS) {
+              if (autoRef.current && fills && !tooDark(exposure) && stableCount.current >= STABLE_TICKS) {
                 void takeShotRef.current();
               }
             }
@@ -181,7 +194,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
       active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [camera]);
+  }, [camera, measure]);
 
   if (!target) {
     return <div className="min-h-dvh bg-black" />;
@@ -224,19 +237,35 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
           <span className="rounded-full bg-black/50 px-3 py-1.5 text-xs backdrop-blur">
             Nahaufnahme {position + 1} von {targets.length}
           </span>
-          <IconButton
-            label="Kameraeinstellungen"
-            onClick={() => setSettingsOpen(true)}
-            className="pointer-events-auto"
-          >
-            <GearIcon />
-          </IconButton>
+          <span className="flex gap-2">
+            {camera.torchAvailable && (
+              <IconButton
+                label={camera.torchOn ? 'Licht aus' : 'Licht an'}
+                onClick={takeOver}
+                className={`pointer-events-auto ${camera.torchOn ? 'text-amber-300' : ''}`}
+                data-testid="torch"
+              >
+                <TorchIcon />
+              </IconButton>
+            )}
+            <IconButton
+              label="Kameraeinstellungen"
+              onClick={() => setSettingsOpen(true)}
+              className="pointer-events-auto"
+            >
+              <GearIcon />
+            </IconButton>
+          </span>
         </div>
 
         <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-2 px-4">
-          {(status || hint || quads.length > 0) && (
-            <span className="rounded-full bg-black/60 px-3 py-1.5 text-center text-sm backdrop-blur">
-              {status ?? hint ?? 'Foto erkannt – ruhig halten'}
+          {(status || hint || dark || quads.length > 0) && (
+            <span
+              className={`rounded-full px-3 py-1.5 text-center text-sm backdrop-blur ${
+                !status && dark ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
+              }`}
+            >
+              {status ?? (dark ? framingText('dunkel', 0, light) : (hint ?? 'Foto erkannt – ruhig halten'))}
             </span>
           )}
         </div>
@@ -303,5 +332,13 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
         </p>
       </div>
     </div>
+  );
+}
+
+function TorchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M13 2L5 13h6l-1 9 8-11h-6z" strokeLinejoin="round" />
+    </svg>
   );
 }

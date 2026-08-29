@@ -1,4 +1,6 @@
-import { downscaleGray, toGray } from './gray';
+import { boxBlur, downscaleGray, toGray } from './gray';
+import { dilate, erode } from './mask';
+import type { Mask } from './mask';
 import type { GrayImage, RgbaImage } from './types';
 import { createRgba } from './types';
 
@@ -58,10 +60,29 @@ function searchShift(ref: GrayImage, moving: GrayImage, radius: number, step: nu
 }
 
 /**
+ * So hell muss ein verrechneter Bildpunkt noch sein, damit an dieser Stelle
+ * überhaupt eine Spiegelung in Frage kommt.
+ */
+const GLARE_BRIGHT = 206;
+
+/** So farblos: Licht hat keine Farbe, ein Abzug fast immer. */
+const GLARE_COLOURLESS = 32;
+
+/** So weit müssen die Aufnahmen an dieser Stelle auseinanderliegen. */
+const GLARE_SPREAD = 30;
+
+/**
  * Entspiegelung: Aus mehreren Aufnahmen derselben Fläche wird pro Pixel der
  * mittlere Helligkeitswert übernommen. Eine Spiegelung wandert beim Bewegen
  * des Telefons über das Foto und ist deshalb in jeder Aufnahme an einer
  * anderen Stelle – als heller Ausreisser fällt sie beim Median heraus.
+ *
+ * Der Median trägt nur so weit, wie die Spiegelung in der Minderheit der
+ * Aufnahmen liegt. Wer das Telefon zu wenig bewegt, hat den Glanz in dreien
+ * von fünf Aufnahmen an derselben Stelle – dann ist der Median selbst die
+ * Spiegelung. Für genau diese Stellen wird nachgebessert: Wo der verrechnete
+ * Wert hell und farblos ist und die Aufnahmen weit auseinanderliegen, zählt
+ * die dunkelste. Sie rauscht etwas mehr, zeigt aber den Abzug statt der Lampe.
  */
 export function mergeFrames(frames: RgbaImage[]): RgbaImage {
   if (frames.length === 0) throw new Error('Keine Aufnahmen zum Zusammenrechnen');
@@ -82,6 +103,19 @@ export function mergeFrames(frames: RgbaImage[]): RgbaImage {
   const k = usable.length;
   const lums = new Float32Array(k);
   const order = new Int32Array(k);
+
+  // Für das Nachbessern: die dunkelste Aufnahme je Bildpunkt und die Stellen,
+  // an denen sie gebraucht werden könnte.
+  const darkest = new Int16Array(width * height).fill(-1);
+  const suspect = new Uint8Array(width * height);
+
+  // Ein Randstreifen bleibt vom Nachbessern ausgenommen. Dort zeigen die
+  // Aufnahmen unvermeidlich Verschiedenes: Jede ist mit ihrem eigenen Viereck
+  // entzerrt, also greift jede am Rand ein Stück weiter ins Umliegende – auf
+  // das Albumpapier, das oft heller ist als das Foto. Diese Uneinigkeit sieht
+  // einer Spiegelung zum Verwechseln ähnlich, ist aber keine.
+  const reach = Math.max(...shifts.map((shift) => Math.max(Math.abs(shift.dx), Math.abs(shift.dy))));
+  const margin = Math.max(3, Math.round(Math.min(width, height) * 0.02)) + reach;
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -139,9 +173,78 @@ export function mergeFrames(frames: RgbaImage[]): RgbaImage {
         }
         out.data[o + 3] = 255;
       }
+
+      // Bleibt an dieser Stelle Glanz stehen? Drei Bedingungen zusammen: Der
+      // verrechnete Wert ist noch hell, er ist farblos, und die Aufnahmen sind
+      // sich uneins. Die dritte ist die wichtigste – wo alle Aufnahmen
+      // dasselbe zeigen, ist es das Foto und nicht die Lampe.
+      const inside = x >= margin && y >= margin && x < width - margin && y < height - margin;
+      if (inside && n >= 3 && lums[n - 1] - lums[0] >= GLARE_SPREAD) {
+        const r = out.data[o];
+        const g = out.data[o + 1];
+        const b = out.data[o + 2];
+        const high = r > g ? (r > b ? r : b) : g > b ? g : b;
+        const low = r < g ? (r < b ? r : b) : g < b ? g : b;
+        if (high >= GLARE_BRIGHT && high - low <= GLARE_COLOURLESS) suspect[y * width + x] = 1;
+      }
+      if (n > 0) darkest[y * width + x] = order[0];
     }
   }
-  return out;
+
+  return repairGlare(out, usable, shifts, darkest, suspect);
+}
+
+/**
+ * Ersetzt die stehengebliebenen Glanzflecken durch die dunkelste Aufnahme.
+ *
+ * Zuerst wird geöffnet: Ein Fleck übersteht das, eine Kante nicht. Das ist
+ * nötig, weil zwei Aufnahmen auch dort auseinanderliegen, wo sie nur um einen
+ * halben Bildpunkt gegeneinander verschoben sind – an jeder scharfen Kante
+ * also. Ohne diesen Schritt zöge sich das Rauschen der dunkelsten Aufnahme
+ * über sämtliche Konturen des Fotos.
+ *
+ * Der Übergang ist weich: Eine harte Grenze zwischen zwei Aufnahmen wäre als
+ * Naht zu sehen, auch wenn beide dasselbe zeigen.
+ */
+function repairGlare(
+  merged: RgbaImage,
+  frames: RgbaImage[],
+  shifts: Shift[],
+  darkest: Int16Array,
+  suspect: Uint8Array,
+): RgbaImage {
+  const { width, height } = merged;
+  const radius = Math.max(1, Math.round(Math.min(width, height) * 0.008));
+  const blobs: Mask = dilate(erode({ data: suspect, width, height }, radius), radius);
+
+  let count = 0;
+  for (let i = 0; i < blobs.data.length; i++) if (blobs.data[i]) count++;
+  // Nichts gefunden, oder so viel, dass die Annahme nicht mehr stimmt: Dann
+  // ist das ganze Bild hell, und die dunkelste Aufnahme wäre nur die
+  // dunkelste, nicht die richtige.
+  if (count === 0 || count > blobs.data.length * 0.4) return merged;
+
+  const edges: GrayImage = { data: new Uint8Array(width * height), width, height };
+  const grown = dilate(blobs, radius);
+  for (let i = 0; i < edges.data.length; i++) edges.data[i] = grown.data[i] ? 255 : 0;
+  const alpha = boxBlur(boxBlur(edges, radius), radius);
+
+  for (let y = 0, i = 0, o = 0; y < height; y++) {
+    for (let x = 0; x < width; x++, i++, o += 4) {
+      const weight = alpha.data[i] / 255;
+      if (weight === 0) continue;
+      const frame = darkest[i];
+      if (frame < 0) continue;
+      const sx = x + shifts[frame].dx;
+      const sy = y + shifts[frame].dy;
+      if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
+      const from = (sy * width + sx) * 4;
+      for (let c = 0; c < 3; c++) {
+        merged.data[o + c] = merged.data[o + c] * (1 - weight) + frames[frame].data[from + c] * weight;
+      }
+    }
+  }
+  return merged;
 }
 
 function writePixel(dst: Uint8ClampedArray, o: number, src: RgbaImage, sx: number, sy: number, width: number): void {
