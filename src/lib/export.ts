@@ -93,6 +93,14 @@ export async function exportBook(
       title: scan.title,
       taken: scan.taken,
       note: scan.note,
+      writing:
+        scan.writing && scan.writingWidth && scan.writingHeight
+          ? {
+              data: new Uint8Array(await scan.writing.arrayBuffer()),
+              width: scan.writingWidth,
+              height: scan.writingHeight,
+            }
+          : undefined,
     });
 
     const page = scan.pageId ? byId.get(scan.pageId) : undefined;

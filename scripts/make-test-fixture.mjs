@@ -54,6 +54,30 @@ for (const [x0, y0, w, h, seed] of photos) {
   });
 }
 
+// Unter dem ersten Foto steht eine Zeile Handschrift – dünne, dunkle Striche,
+// wie sie auf einer echten Albumseite danebenstehen.
+function handschrift(x0, y0, width, height, seed) {
+  const rnd = lcg(seed);
+  const thickness = Math.max(2, Math.round(height * 0.12));
+  let x = x0;
+  while (x < x0 + width) {
+    const w = Math.round(height * (0.4 + rnd() * 0.5));
+    const top = y0 + Math.round(rnd() * height * 0.2);
+    const bottom = y0 + height - Math.round(rnd() * height * 0.2);
+    for (const sx of [x, x + w]) {
+      for (let yy = top; yy < bottom; yy++) {
+        for (let t = 0; t < thickness; t++) set(sx + t, yy, 42, 40, 44);
+      }
+    }
+    const my = (top + bottom) >> 1;
+    for (let xx = x; xx <= x + w; xx++) {
+      for (let t = 0; t < thickness; t++) set(xx, my + t, 42, 40, 44);
+    }
+    x += w + Math.round(height * 0.35);
+  }
+}
+handschrift(285, 560, 380, 34, 5);
+
 mkdirSync(OUT, { recursive: true });
 writeFileSync(resolve(OUT, 'albumseite.png'), encodePng(pixels, WIDTH, HEIGHT));
 console.log('geschrieben: e2e/fixtures/albumseite.png');

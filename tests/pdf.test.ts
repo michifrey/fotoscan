@@ -107,6 +107,31 @@ describe('Fotobuch', () => {
     expect(contains(data, sheet)).toBe(true);
   });
 
+  it('druckt die Handschrift der Albumseite unter das Foto', async () => {
+    const hand = jpeg(5);
+    const data = await bytes(
+      buildBook({
+        title: 'Mit Handschrift',
+        photos: [
+          {
+            data: jpeg(1),
+            width: 400,
+            height: 300,
+            title: 'Am See',
+            writing: { data: hand, width: 600, height: 90 },
+          },
+        ],
+      }),
+    );
+
+    // Beide Bilder stehen auf derselben Seite und werden beide gezeichnet.
+    expect(contains(data, hand)).toBe(true);
+    const text = asText(data);
+    expect(text).toContain('/Im0');
+    expect(text).toContain('/Im1');
+    expect(text).toContain('/Count 2');
+  });
+
   it('schreibt Umlaute als WinAnsi und ersetzt Unbekanntes', () => {
     expect(Array.from(encodeText('äöü'))).toEqual([0xe4, 0xf6, 0xfc]);
     // Der Gedankenstrich hat in WinAnsi eine eigene Stelle …

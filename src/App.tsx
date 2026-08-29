@@ -9,10 +9,15 @@ import {
   listAlbums,
   listPages,
   listScans,
+  putPage,
+  putScan,
   renameAlbum,
   reorderScans,
+  setRemote,
   updateScan,
 } from './lib/storage';
+import type { Restored } from './lib/backup';
+import { RemoteSheet } from './components/RemoteSheet';
 import { HomeScreen } from './components/HomeScreen';
 import { AlbumScreen } from './components/AlbumScreen';
 import { CaptureScreen } from './components/CaptureScreen';
@@ -33,6 +38,7 @@ export function App() {
   const [pages, setPages] = useState<Page[]>([]);
   const [shot, setShot] = useState<Shot | null>(null);
   const [ready, setReady] = useState(false);
+  const [fetching, setFetching] = useState(false);
 
   const refreshAlbums = useCallback(async () => {
     const list = await listAlbums();
@@ -66,6 +72,34 @@ export function App() {
     setPages(await listPages(entry.id));
   }, []);
 
+  /**
+   * Ein Album aus einer Sicherung übernehmen.
+   *
+   * Gibt es hier schon ein Album zu demselben Repository, wird es aufgefrischt
+   * statt ein zweites danebengelegt: Die Kennungen aus der Sicherung bleiben
+   * erhalten, also treffen die Fotos genau ihre alten Plätze.
+   */
+  const takeRestored = useCallback(
+    async (remote: { owner: string; repo: string }, restored: Restored) => {
+      const existing = (await listAlbums()).find(
+        (entry) => entry.remote?.owner === remote.owner && entry.remote?.repo === remote.repo,
+      );
+      const target = existing ?? (await createAlbum(restored.name));
+      const withRemote = await setRemote(target, remote);
+
+      for (const page of restored.pages) await putPage({ ...page, albumId: withRemote.id });
+      for (const photo of restored.photos) await putScan({ ...photo, albumId: withRemote.id });
+
+      await refreshAlbums();
+      setAlbum(withRemote);
+      setScans(await listScans(withRemote.id));
+      setPages(await listPages(withRemote.id));
+      setFetching(false);
+      setView('album');
+    },
+    [refreshAlbums],
+  );
+
   const handleCreate = useCallback(
     async (name: string) => {
       const entry = await createAlbum(name || `Album ${albums.length + 1}`);
@@ -90,6 +124,9 @@ export function App() {
           width: photo.width,
           height: photo.height,
           pageId: stored?.id,
+          writing: photo.writing?.blob,
+          writingWidth: photo.writing?.width,
+          writingHeight: photo.writing?.height,
         });
       }
       await reloadScans(album);
@@ -174,9 +211,26 @@ export function App() {
           setView('home');
           void refreshAlbums();
         }}
+        onRemote={async (remote) => {
+          setAlbum(await setRemote(album, remote));
+          void refreshAlbums();
+        }}
+        onRestored={takeRestored}
       />
     );
   }
 
-  return <HomeScreen albums={albums} counts={counts} covers={covers} onOpen={(entry) => void openAlbum(entry)} onCreate={handleCreate} />;
+  return (
+    <>
+      <HomeScreen
+        albums={albums}
+        counts={counts}
+        covers={covers}
+        onOpen={(entry) => void openAlbum(entry)}
+        onCreate={handleCreate}
+        onFetch={() => setFetching(true)}
+      />
+      {fetching && <RemoteSheet onClose={() => setFetching(false)} onRestored={takeRestored} />}
+    </>
+  );
 }

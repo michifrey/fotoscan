@@ -25,7 +25,7 @@ export default defineConfig({
       // Der Kamerazugriff wird bewusst nicht erlaubt: Dieser Test geht den Weg
       // über „Galerie" und prüft damit zugleich das Verhalten ohne Kamera.
       name: 'ohne-kamera',
-      testMatch: /(scan|album)\.spec\.ts/,
+      testMatch: /(scan|album|sicherung)\.spec\.ts/,
       use: { permissions: [] },
     },
     {
