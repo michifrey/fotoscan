@@ -5,6 +5,7 @@ import type { EnhanceOptions } from '../lib/imaging/enhance';
 import { outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
 import { scaleQuad } from '../lib/imaging/geometry';
 import type { Quad } from '../lib/imaging/types';
+import { hasGlare } from '../lib/imaging/glare';
 import { mergePhotosAsync, refine } from '../lib/pipeline';
 import type { Closeup } from '../lib/imaging/closeup';
 import type { Shot } from './CaptureScreen';
@@ -39,12 +40,15 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [closeups, setCloseups] = useState<Map<number, CloseupShot>>(() => new Map());
   const [targets, setTargets] = useState<CloseupTarget[] | null>(null);
+  /** Fotos, auf denen auch nach dem Verrechnen noch eine Spiegelung liegt. */
+  const [glare, setGlare] = useState<number[]>([]);
 
   const frame = shot.frames[0];
   const previewCanvas = useRef<HTMLCanvasElement | null>(null);
 
-  // Verkleinerte Kopie der Aufnahme – nur für die Vorschau, damit das
-  // Nachführen beim Ziehen der Ecken flüssig bleibt.
+  // Verkleinerte Kopien der Aufnahmen – für die Vorschau, damit das Nachführen
+  // beim Ziehen der Ecken flüssig bleibt, und für die Prüfung auf
+  // stehengebliebene Spiegelungen.
   const small = useMemo(() => {
     const factor = Math.min(1, 900 / Math.max(frame.width, frame.height));
     const width = Math.max(1, Math.round(frame.width * factor));
@@ -56,10 +60,37 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
     const source = document.createElement('canvas');
     source.width = frame.width;
     source.height = frame.height;
-    source.getContext('2d')!.putImageData(frame, 0, 0);
-    ctx.drawImage(source, 0, 0, width, height);
-    return { image: ctx.getImageData(0, 0, width, height), scale: factor };
-  }, [frame]);
+
+    const images = shot.frames.map((each) => {
+      source.getContext('2d')!.putImageData(each, 0, 0);
+      ctx.drawImage(source, 0, 0, width, height);
+      return ctx.getImageData(0, 0, width, height);
+    });
+    return { image: images[0], images, scale: factor };
+  }, [frame, shot.frames]);
+
+  /**
+   * Bleibt nach dem Verrechnen Glanz übrig?
+   *
+   * Gerechnet wird auf den verkleinerten Aufnahmen und mit dem zuerst
+   * erkannten Zuschnitt – einmal, im Hintergrund. Es geht um das Licht im
+   * Raum, nicht um den Zuschnitt auf den Bildpunkt genau, und der Hinweis
+   * soll da sein, bevor gespeichert wird: Solange die Seite noch aufgeschlagen
+   * daliegt, kostet eine zweite Aufnahme nichts.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const quadsForCheck = shot.quads.map((quad) => scaleQuad(quad, small.scale));
+    void mergePhotosAsync({ frames: small.images, quads: quadsForCheck })
+      .then((merged) => {
+        if (cancelled) return;
+        setGlare(merged.flatMap((image, index) => (image && hasGlare(image) ? [index] : [])));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [shot.quads, small]);
 
   useEffect(() => {
     let url: string | null = null;
@@ -156,6 +187,8 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   }, []);
 
   const withCloseup = selected.filter((index) => closeups.has(index)).length;
+  // Nur was auch gespeichert wird, ist einen Hinweis wert.
+  const betroffen = glare.filter((index) => selected.includes(index));
 
   if (targets) {
     return (
@@ -211,6 +244,15 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
         </div>
 
         <div className="mx-auto max-w-2xl space-y-4 px-4 pt-4">
+          {betroffen.length > 0 && (
+            <div
+              className="rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs leading-relaxed text-amber-200"
+              data-testid="glanz-hinweis"
+            >
+              {glanzText(betroffen, quads.length, shot.frames.length)}
+            </div>
+          )}
+
           <p className="text-xs text-stone-400">
             {quads.length > 1
               ? 'Das Häkchen nimmt ein Foto aus der Auswahl. Tippe auf ein Foto, um seine Ecken zu zeigen und zu ziehen.'
@@ -313,6 +355,27 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       </div>
     </div>
   );
+}
+
+/**
+ * Was tun gegen eine Spiegelung, die stehengeblieben ist? Bei einer
+ * Aufnahmereihe hilft nur mehr Bewegung: Der Glanz muss zwischen den
+ * Aufnahmen über das Foto wandern, sonst ist er in der Mehrheit und lässt
+ * sich nicht herausrechnen. Bei einem Einzelbild gibt es gar nichts zu
+ * verrechnen – dafür ist das Entspiegeln da.
+ */
+function glanzText(betroffen: number[], gesamt: number, frames: number): string {
+  const welche =
+    gesamt === 1
+      ? 'Auf dem Foto'
+      : betroffen.length === 1
+        ? `Auf Foto ${betroffen[0] + 1}`
+        : `Auf den Fotos ${betroffen.map((index) => index + 1).join(', ')}`;
+  const rat =
+    frames > 1
+      ? 'Für ein besseres Ergebnis noch einmal aufnehmen und das Telefon dabei deutlicher neigen.'
+      : 'Mit eingeschaltetem Entspiegeln lässt sie sich herausrechnen.';
+  return `${welche} bleibt auch nach dem Verrechnen eine helle Stelle – vermutlich eine Spiegelung. ${rat}`;
 }
 
 function RotateIcon({ className = '' }: { className?: string }) {

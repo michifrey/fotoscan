@@ -5,6 +5,8 @@ import { orientationSupported, requestOrientationAccess, useTilt } from '../lib/
 import { imageDataFromBlob } from '../lib/canvas';
 import { framing, framingText } from '../lib/framing';
 import type { Framing } from '../lib/framing';
+import { exposureOf } from '../lib/imaging/exposure';
+import { useAutoLight } from '../lib/light';
 import { detect } from '../lib/pipeline';
 import { defaultQuad } from '../lib/imaging/detect';
 import { inView, makeSubject, regionOf, trackSubject } from '../lib/imaging/track';
@@ -248,6 +250,12 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     return () => window.clearTimeout(handle);
   }, [guided, receiving]);
 
+  // Das Licht wirft seinen eigenen Glanz auf den Abzug. Beim Entspiegeln
+  // wandert der mit dem Telefon und wird über die vier Punkte herausgerechnet;
+  // beim Einzelbild bliebe er stehen. Von selbst zugeschaltet wird es deshalb
+  // nur beim Entspiegeln.
+  const { light, measure, takeOver } = useAutoLight(camera, destack);
+
   // Laufende Erkennung auf einem verkleinerten Vorschaubild – und während
   // einer Aufnahmereihe stattdessen die Verfolgung des Motivs.
   useEffect(() => {
@@ -298,7 +306,12 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
                 return found;
               });
 
-              const state = framing(found, frame.width, frame.height, stableCount.current >= 3);
+              // Gemessen wird dort, wo das Motiv liegt: Eine helle Tischplatte
+              // ringsum sagt nichts darüber, wie hell die Seite ist.
+              const exposure = exposureOf(frame, regionOf(found, frame.width, frame.height));
+              measure(exposure);
+
+              const state = framing(found, frame.width, frame.height, stableCount.current >= 3, exposure);
               setView(state);
               if (autoRef.current && state === 'bereit' && Date.now() - lastCapture.current > 2500) {
                 void takeShotRef.current();
@@ -317,7 +330,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
       active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [camera]);
+  }, [camera, measure]);
 
   const importFile = useCallback(
     async (file: File | undefined) => {
@@ -386,8 +399,9 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
             {camera.torchAvailable && (
               <IconButton
                 label={camera.torchOn ? 'Licht aus' : 'Licht an'}
-                onClick={() => void camera.toggleTorch()}
+                onClick={takeOver}
                 className={`pointer-events-auto ${camera.torchOn ? 'text-amber-300' : ''}`}
+                data-testid="torch"
               >
                 <TorchIcon />
               </IconButton>
@@ -410,7 +424,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
                 !status && view !== 'bereit' ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
               }`}
             >
-              {status ?? framingText(view, quads.length)}
+              {status ?? framingText(view, quads.length, light)}
             </span>
           </p>
         )}

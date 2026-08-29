@@ -27,6 +27,18 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
   paar hundert. Wer will, geht danach jedes Foto einzeln noch einmal aus der
   Nähe an – das bringt ein Vielfaches an Auflösung. Die Spiegelung, die sich aus
   der Nähe unweigerlich einstellt, rechnet die Seitenaufnahme wieder heraus.
+- **Licht, wenn es zu dunkel ist.** Die App misst, wie hell das Motiv vor der
+  Kamera liegt – der Median, und nur dort, wo die Seite liegt, damit ein
+  Fenster im Bild sie nicht täuscht. Wird es zu dunkel, schaltet sie das Licht
+  der Kamera zu. Von selbst allerdings nur dort, wo dessen eigener Glanz
+  hinterher wieder herausgerechnet wird: beim Entspiegeln und bei den
+  Nahaufnahmen. Beim Einzelbild bliebe er stehen, deshalb steht dort nur der
+  Hinweis.
+- **Stehengebliebene Spiegelungen finden und nachbessern.** Der Median trägt
+  nur, solange der Glanz in der Minderheit der Aufnahmen liegt. Wo er das nicht
+  tut, zählt die dunkelste Aufnahme; und was danach noch übrig ist, sagt die
+  App vor dem Speichern, damit die Seite gleich noch einmal aufgenommen werden
+  kann.
 - **Aufhellen.** Tonwerte spreizen, leicht nachschärfen und – abschaltbar – den
   Gelbstich vergilbter Abzüge abschwächen.
 - **Objektiv wählen.** Moderne Telefone haben mehrere Rückkameras, und der
@@ -64,7 +76,9 @@ vorhandenes Bild öffnen und genauso verarbeiten.
 
 ### Für gute Ergebnisse
 
-- Gleichmässiges, indirektes Licht; kein direkter Blitz.
+- Gleichmässiges, indirektes Licht; kein direkter Blitz. Ist es trotzdem zu
+  dunkel, hilft das Licht der Kamera – beim Entspiegeln schaltet es sich von
+  selbst zu.
 - Das Album flach hinlegen und möglichst senkrecht darüber fotografieren.
 - Entspiegeln eingeschaltet lassen und die vier Punkte wirklich anfahren –
   je deutlicher der Blickwinkel wechselt, desto sauberer verschwindet die
@@ -87,12 +101,14 @@ kein WASM-Download. Die Pipeline liegt in [`src/lib/imaging/`](src/lib/imaging):
 | Viereck annähern | `geometry.ts` | konvexe Hülle, Douglas-Peucker auf genau vier Ecken |
 | Entzerren | `warp.ts` | Homographie über ein 8×8-Gleichungssystem, bilineare Abtastung |
 | Motiv verfolgen | `track.ts` | Muster der Grundaufnahme über normierte Kreuzkorrelation wiederfinden |
+| Helligkeit messen | `exposure.ts` | Median des Motivs; darunter wird das Licht zugeschaltet |
+| Spiegelungen finden | `glare.ts` | ausgebrannt, farblos und ein Fleck – alle drei zusammen |
 | Aufnahmen zuordnen | `detect.ts`, `stack.ts` | jede Aufnahme einzeln erkennen und ihr Viereck der Grundaufnahme zuordnen |
-| Entspiegeln | `destack.ts` | Aufnahmen ausrichten, pro Pixel den mittleren Helligkeitswert nehmen |
+| Entspiegeln | `destack.ts` | Aufnahmen ausrichten, pro Pixel den mittleren Helligkeitswert nehmen; wo der Glanz die Mehrheit hat, die dunkelste Aufnahme |
 | Nahaufnahme verrechnen | `closeup.ts` | Seitenaufnahme auf die Nahaufnahme hochziehen, Glanzstellen daraus ersetzen |
 | Aufhellen | `enhance.ts` | Tonwertspreizung über die Helligkeit, Grauwelt-Weissabgleich, Unschärfemaske |
 
-Vier Punkte, die den Unterschied machen:
+Fünf Punkte, die den Unterschied machen:
 
 - **Verschachtelte Suche.** Wird eine grosse Fläche gefunden, sucht die App
   darin weiter. Die Albumseite auf dem Tisch ist also nur die Zwischenstufe;
@@ -111,6 +127,18 @@ Vier Punkte, die den Unterschied machen:
   Grundaufnahme zugeordnet. Bei kräftiger Bewegung halbiert das den Fehler
   gegenüber dem gemeinsamen Viereck; wird ein Foto in einer Aufnahme nicht
   sicher wiedergefunden, bleibt diese Aufnahme aussen vor.
+- **Der Median trägt nur bis zur Mehrheit.** Eine Spiegelung fällt beim
+  Verrechnen heraus, solange sie in weniger als der Hälfte der Aufnahmen an
+  derselben Stelle liegt. Wer das Telefon zu wenig bewegt, hat sie in dreien
+  von fünf – dann *ist* der Median die Spiegelung. Für solche Stellen zählt
+  die dunkelste Aufnahme: Sie rauscht etwas mehr, zeigt aber den Abzug statt
+  der Lampe. Erkannt wird die Stelle an drei Merkmalen zusammen – der
+  verrechnete Wert ist noch hell, er ist farblos, und die Aufnahmen sind sich
+  uneins. Das dritte ist das wichtigste: Wo alle Aufnahmen dasselbe zeigen,
+  ist es ein weisses Hemd und keine Lampe. Der Bildrand bleibt ausgenommen,
+  denn dort greift jede Aufnahme mit ihrem eigenen Viereck ein Stück weiter
+  aufs Albumpapier hinaus – eine Uneinigkeit, die einer Spiegelung zum
+  Verwechseln ähnlich sieht.
 - **Punkte am Motiv, nicht am Bildschirm.** Aus der Grundaufnahme wird der
   Bereich der erkannten Fotos als kleines Graumuster gemerkt und in jedem
   Vorschaubild über die normierte Kreuzkorrelation wiedergesucht – die ist
@@ -161,7 +189,12 @@ einbinden.
   über Verschiebung, Drehung, Grösse und Helligkeit hinweg – samt der Fälle, in
   denen es als verloren gelten muss. Für die Nahaufnahmen: dass der Glanz
   verschwindet, die Zeichnung bleibt, ausserhalb des Glanzes kein Bildpunkt
-  angefasst wird und eine unpassende Vergleichsaufnahme folgenlos bleibt.
+  angefasst wird und eine unpassende Vergleichsaufnahme folgenlos bleibt. Dazu
+  das Nachbessern einer Spiegelung, die in der Mehrheit der Aufnahmen liegt –
+  samt der Gegenproben, die es begrenzen: ein weisses Hemd, über das sich alle
+  Aufnahmen einig sind, der Bildrand, und ein Foto ganz ohne Glanz. Und das
+  Messen der Helligkeit, dem weder ein Fenster neben dem Motiv noch eine helle
+  Tischplatte ringsum etwas anhaben kann.
 - `e2e/` fährt in Chromium zwei Wege ab. Ohne Kameraerlaubnis: Album anlegen,
   Albumseite über „Galerie" öffnen, drei erkannte Fotos, eines abwählen,
   speichern, Neustart überstehen. Mit künstlichem Kamerabild: auslösen, die
