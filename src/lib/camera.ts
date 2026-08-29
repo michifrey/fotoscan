@@ -163,11 +163,23 @@ export function useCamera(active: boolean, deviceId: string | null = null) {
     }
   }, []);
 
+  /**
+   * Licht ein- oder ausschalten. Getrennt vom Umschalten, weil die
+   * Automatik einen Zustand herstellen will und nicht wechseln – zwei
+   * Umschaltungen kurz hintereinander liessen es sonst an, obwohl es aus sein
+   * sollte.
+   */
+  const setTorch = useCallback(
+    async (on: boolean) => {
+      if (await apply({ torch: on })) setState((s) => (s.torchOn === on ? s : { ...s, torchOn: on }));
+      else setState((s) => ({ ...s, torchAvailable: false }));
+    },
+    [apply],
+  );
+
   const toggleTorch = useCallback(async () => {
-    const next = !state.torchOn;
-    if (await apply({ torch: next })) setState((s) => ({ ...s, torchOn: next }));
-    else setState((s) => ({ ...s, torchAvailable: false }));
-  }, [apply, state.torchOn]);
+    await setTorch(!state.torchOn);
+  }, [setTorch, state.torchOn]);
 
   const setZoom = useCallback(
     async (value: number) => {
@@ -191,7 +203,7 @@ export function useCamera(active: boolean, deviceId: string | null = null) {
     return frameFromVideo(video, maxDim);
   }, []);
 
-  return { ...state, attach, toggleTorch, setZoom, setFocusMode, capture, videoRef };
+  return { ...state, attach, toggleTorch, setTorch, setZoom, setFocusMode, capture, videoRef };
 }
 
 /** Kurze Pause – für die Aufnahmereihe der Entspiegelung. */

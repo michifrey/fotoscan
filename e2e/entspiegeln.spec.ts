@@ -37,6 +37,10 @@ test('vier Punkte abfahren und daraus ein entspiegeltes Foto rechnen', async ({ 
     await expect(page.getByTestId(`ziel-${i}`)).toHaveAttribute('data-erledigt', 'nein');
   }
 
+  // Die Punkte hängen am Motiv: Solange die Kamera es im Blick hat, gilt es
+  // als gefunden – und nur dann wird überhaupt ausgelöst.
+  await expect(page.getByTestId('motiv')).toHaveAttribute('data-verloren', 'nein');
+
   // Ausgangshaltung setzen, dann die vier Punkte anfahren:
   // oben, rechts, unten, links. 11 Grad entsprechen der vollen Auslenkung.
   await neige(page, 0, 0);
