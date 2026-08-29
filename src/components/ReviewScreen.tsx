@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { blobFromImageData, toImageData } from '../lib/canvas';
+import { blobFromImageData, imageDataFromBlob, toImageData } from '../lib/canvas';
 import { enhance } from '../lib/imaging/enhance';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
 import { outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
 import { scaleQuad } from '../lib/imaging/geometry';
 import type { Quad } from '../lib/imaging/types';
-import { extract } from '../lib/pipeline';
+import { mergePhotosAsync, refine } from '../lib/pipeline';
+import type { Closeup } from '../lib/imaging/closeup';
 import type { Shot } from './CaptureScreen';
+import { CloseupScreen } from './CloseupScreen';
+import type { CloseupShot, CloseupTarget } from './CloseupScreen';
 import { QuadEditor } from './QuadEditor';
 import { BackIcon, Button, IconButton, Spinner, Switch, TopBar } from './ui';
 
@@ -32,7 +35,10 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   const [options, setOptions] = useState<EnhanceOptions>({ levels: true, whiteBalance: true, sharpen: true });
   const [showDetails, setShowDetails] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [closeups, setCloseups] = useState<Map<number, CloseupShot>>(() => new Map());
+  const [targets, setTargets] = useState<CloseupTarget[] | null>(null);
 
   const frame = shot.frames[0];
   const previewCanvas = useRef<HTMLCanvasElement | null>(null);
@@ -98,24 +104,82 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
     setSaving(true);
     try {
       const chosen = selected.map((index) => quads[index]).filter(Boolean);
-      const images = await extract({ frames: shot.frames, quads: chosen, options, rotation });
-      const photos = await Promise.all(
-        images.map(async (image) => ({
+      // Erst die Seitenaufnahme: entzerrt und entspiegelt, aber noch ohne
+      // Nachbearbeitung – sie ist die Vorlage für die Nahaufnahmen.
+      const references = await mergePhotosAsync({ frames: shot.frames, quads: chosen });
+
+      const photos: ExtractedPhoto[] = [];
+      for (let i = 0; i < references.length; i++) {
+        if (references.length > 1) setProgress(`Foto ${i + 1} von ${references.length}`);
+        const near = closeups.get(selected[i]);
+        let closeup: Closeup | null = null;
+        if (near) {
+          // Die Nahaufnahmen liegen als Bilddatei vor, nicht als Pixel: Sechs
+          // Aufnahmen in voller Grösse gleichzeitig im Speicher zu halten
+          // sprengt den Rahmen eines Telefons. Ausgepackt wird deshalb erst
+          // hier, eine nach der anderen.
+          const image = await imageDataFromBlob(near.blob, Math.max(near.width, near.height));
+          closeup = { image, quad: near.quad };
+        }
+        const image = await refine({ reference: references[i], closeup, options, rotation });
+        photos.push({
           blob: await blobFromImageData(image, 0.92),
           width: image.width,
           height: image.height,
-        })),
-      );
+        });
+      }
       await onAccept(photos);
     } finally {
+      setProgress(null);
       setSaving(false);
     }
-  }, [onAccept, options, quads, rotation, selected, shot.frames]);
+  }, [closeups, onAccept, options, quads, rotation, selected, shot.frames]);
+
+  /** Vorschaubilder der ausgewählten Fotos für die Nahaufnahmen-Runde. */
+  const openCloseups = useCallback(async () => {
+    const list = await Promise.all(
+      selected.map(async (index) => {
+        const scaled = scaleQuad(quads[index], small.scale);
+        const size = outputSize(scaled, 200);
+        const warped = warpPerspective(small.image, scaled, size.width, size.height);
+        return { index, url: URL.createObjectURL(await blobFromImageData(warped, 0.8)) };
+      }),
+    );
+    setTargets(list);
+  }, [quads, selected, small]);
+
+  const closeCloseups = useCallback(() => {
+    setTargets((current) => {
+      current?.forEach((entry) => URL.revokeObjectURL(entry.url));
+      return null;
+    });
+  }, []);
+
+  const withCloseup = selected.filter((index) => closeups.has(index)).length;
+
+  if (targets) {
+    return (
+      <CloseupScreen
+        targets={targets}
+        existing={closeups}
+        onDone={(shots) => {
+          setCloseups(shots);
+          closeCloseups();
+        }}
+        onCancel={closeCloseups}
+      />
+    );
+  }
 
   if (saving) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-stone-950 text-stone-100">
-        <Spinner label={selected.length > 1 ? `${selected.length} Fotos werden verarbeitet …` : 'Foto wird verarbeitet …'} />
+        <Spinner
+          label={
+            progress ??
+            (selected.length > 1 ? `${selected.length} Fotos werden verarbeitet …` : 'Foto wird verarbeitet …')
+          }
+        />
       </div>
     );
   }
@@ -172,6 +236,31 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
                 <RotateIcon className="-scale-x-100" />
               </IconButton>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-white/10 px-4 py-3">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">Nahaufnahmen</p>
+                <p className="mt-0.5 text-xs text-stone-400">
+                  Jedes Foto einzeln aus der Nähe: mehr als die dreifache Auflösung. Spiegelungen
+                  rechnet die Seitenaufnahme heraus.
+                </p>
+              </div>
+              <Button
+                onClick={() => void openCloseups()}
+                disabled={selected.length === 0}
+                data-testid="closeups"
+                className="shrink-0 px-3 py-1.5 text-xs"
+              >
+                {withCloseup > 0 ? 'Ergänzen' : 'Aufnehmen'}
+              </Button>
+            </div>
+            {withCloseup > 0 && (
+              <p className="mt-2 text-xs text-amber-300">
+                {withCloseup} von {selected.length} Fotos mit Nahaufnahme
+              </p>
+            )}
           </div>
 
           <div className="rounded-xl border border-white/10 px-4">

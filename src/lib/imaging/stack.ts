@@ -21,6 +21,16 @@ export function extractPhotos(
   options: EnhanceOptions,
   rotation: number,
 ): RgbaImage[] {
+  return mergePhotos(frames, baseQuads).map((merged) => rotate(enhance(merged, options), rotation));
+}
+
+/**
+ * Dasselbe ohne Nachbearbeitung: entzerrt und entspiegelt, sonst unberührt.
+ *
+ * Das ist die Vorlage für die Nahaufnahmen – erst wenn feststeht, ob eine
+ * dazukommt, wird aufgehellt und gedreht. Sonst würde zweimal nachbearbeitet.
+ */
+export function mergePhotos(frames: RgbaImage[], baseQuads: Quad[]): RgbaImage[] {
   const perFrame: (Quad | null)[][] = frames.map((frame, index) =>
     index === 0 ? baseQuads.slice() : matchQuads(baseQuads, detectPhotoQuads(frame)),
   );
@@ -37,7 +47,6 @@ export function extractPhotos(
       warped.push(warpPerspective(frames[frame], quad, size.width, size.height));
     }
 
-    const merged = warped.length > 1 ? mergeFrames(warped) : warped[0];
-    return rotate(enhance(merged, options), rotation);
+    return warped.length > 1 ? mergeFrames(warped) : warped[0];
   });
 }

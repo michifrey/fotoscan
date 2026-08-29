@@ -1,0 +1,307 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCamera } from '../lib/camera';
+import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
+import { blobFromImageData } from '../lib/canvas';
+import { detect } from '../lib/pipeline';
+import { polygonArea } from '../lib/imaging/geometry';
+import type { Quad } from '../lib/imaging/types';
+import { BackIcon, Button, IconButton } from './ui';
+import { QuadEditor } from './QuadEditor';
+import { CameraSettings, GearIcon } from './CameraSettings';
+import { isStable } from './CaptureScreen';
+
+/** Eine Nahaufnahme, wie sie zur Weiterverarbeitung aufbewahrt wird. */
+export interface CloseupShot {
+  blob: Blob;
+  width: number;
+  height: number;
+  quad: Quad;
+}
+
+/** Ein Foto der Seitenaufnahme, das nachfotografiert werden soll. */
+export interface CloseupTarget {
+  /** Stelle in der Liste der erkannten Fotos. */
+  index: number;
+  /** Kleine Vorschau, damit klar ist, welches Foto gemeint ist. */
+  url: string;
+}
+
+interface Props {
+  targets: CloseupTarget[];
+  existing: Map<number, CloseupShot>;
+  onDone: (shots: Map<number, CloseupShot>) => void;
+  onCancel: () => void;
+}
+
+/** Auflösung der Nahaufnahme – eine je Foto, da darf sie gross sein. */
+const CLOSE_MAX = 3200;
+const PREVIEW_MAX = 480;
+/** So viel des Bildes muss das Foto füllen, damit die Aufnahme etwas bringt. */
+const FILL_MIN = 0.3;
+/** So oft muss die Erkennung ruhig stehen, bevor automatisch ausgelöst wird. */
+const STABLE_TICKS = 3;
+
+/**
+ * Die dritte Runde: jedes Foto einzeln aus der Nähe.
+ *
+ * Auf der Seitenaufnahme teilen sich alle Fotos einer Albumseite die Bildpunkte
+ * der Kamera; für das einzelne Foto bleibt ein Bruchteil. Wer näher herangeht,
+ * bekommt ein Vielfaches – und die Spiegelung, die sich dabei unweigerlich
+ * einstellt, rechnet die Seitenaufnahme wieder heraus.
+ */
+export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
+  const [deviceId, setDeviceId] = useState<string | null>(() => rememberedCamera());
+  const camera = useCamera(true, deviceId);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [position, setPosition] = useState(0);
+  const [shots, setShots] = useState<Map<number, CloseupShot>>(() => new Map(existing));
+  const [quads, setQuads] = useState<Quad[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const [auto, setAuto] = useState(true);
+  const [aspect, setAspect] = useState(3 / 4);
+
+  const busy = useRef(false);
+  const capturing = useRef(false);
+  const stableCount = useRef(0);
+  const previewSize = useRef({ width: 4, height: 3 });
+  const chosen = useRef(false);
+  const fellBack = useRef(false);
+  const autoRef = useRef(auto);
+  autoRef.current = auto && !settingsOpen;
+
+  const target = targets[position];
+
+  useEffect(() => {
+    if (chosen.current || deviceId !== null || camera.cameras.length === 0) return;
+    chosen.current = true;
+    const best = preferred(camera.cameras);
+    if (best && best.deviceId !== camera.activeId) setDeviceId(best.deviceId);
+  }, [camera.cameras, camera.activeId, deviceId]);
+
+  useEffect(() => {
+    if (!camera.error || deviceId === null || fellBack.current) return;
+    fellBack.current = true;
+    setDeviceId(null);
+  }, [camera.error, deviceId]);
+
+  const advance = useCallback(() => {
+    setQuads([]);
+    stableCount.current = 0;
+    setPosition((current) => current + 1);
+  }, []);
+
+  const takeShot = useCallback(async () => {
+    if (capturing.current || !target) return;
+    capturing.current = true;
+    stableCount.current = 0;
+    setStatus('Foto wird gesucht …');
+    try {
+      const frame = camera.capture(CLOSE_MAX);
+      if (!frame) return;
+      const found = await detect(frame);
+      // Das grösste Viereck ist das Foto; alles andere sind Nachbarn, die am
+      // Rand mit ins Bild ragen.
+      const quad = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a))[0];
+      if (!quad || polygonArea(quad) < frame.width * frame.height * FILL_MIN) {
+        setHint('Kein formatfüllendes Foto erkannt – näher herangehen.');
+        navigator.vibrate?.([20, 60, 20]);
+        return;
+      }
+
+      const blob = await blobFromImageData(frame, 0.95);
+      navigator.vibrate?.(30);
+      setShots((current) => {
+        const next = new Map(current);
+        next.set(target.index, { blob, width: frame.width, height: frame.height, quad });
+        return next;
+      });
+      setHint(null);
+      advance();
+    } finally {
+      setStatus(null);
+      capturing.current = false;
+    }
+  }, [advance, camera, target]);
+
+  const takeShotRef = useRef(takeShot);
+  takeShotRef.current = takeShot;
+
+  // Fertig, sobald alle Fotos durch sind.
+  useEffect(() => {
+    if (position >= targets.length) onDone(shots);
+  }, [onDone, position, shots, targets.length]);
+
+  // Laufende Erkennung auf einem verkleinerten Vorschaubild.
+  useEffect(() => {
+    let active = true;
+    let timer: number | undefined;
+
+    const tick = async () => {
+      if (!active) return;
+      const video = camera.videoRef.current;
+      if (video && video.videoWidth > 0 && !busy.current && !capturing.current) {
+        busy.current = true;
+        try {
+          const frame = camera.capture(PREVIEW_MAX);
+          if (frame) {
+            previewSize.current = { width: frame.width, height: frame.height };
+            setAspect(frame.width / frame.height);
+            const found = await detect(frame, 420);
+            // Nur das grösste zeigen: In der Nahaufnahme ist genau ein Foto
+            // gemeint, angeschnittene Nachbarn sind nicht die Aufgabe.
+            const largest = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a)).slice(0, 1);
+            const fills =
+              largest.length === 1 && polygonArea(largest[0]) >= frame.width * frame.height * FILL_MIN;
+
+            if (active) {
+              setQuads((previous) => {
+                if (fills && isStable(previous, largest, Math.max(frame.width, frame.height) * 0.02)) {
+                  stableCount.current += 1;
+                } else {
+                  stableCount.current = 0;
+                }
+                return fills ? largest : [];
+              });
+
+              if (autoRef.current && fills && stableCount.current >= STABLE_TICKS) {
+                void takeShotRef.current();
+              }
+            }
+          }
+        } finally {
+          busy.current = false;
+        }
+      }
+      timer = window.setTimeout(tick, 180);
+    };
+
+    tick();
+    return () => {
+      active = false;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [camera]);
+
+  if (!target) {
+    return <div className="min-h-dvh bg-black" />;
+  }
+
+  return (
+    <div className="flex min-h-dvh flex-col bg-black text-stone-100">
+      <div className="relative flex flex-1 items-center justify-center overflow-hidden">
+        <div className="relative w-full" style={{ aspectRatio: aspect }}>
+          <video
+            ref={camera.attach}
+            playsInline
+            muted
+            autoPlay
+            className="size-full object-cover"
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              if (video.videoWidth) setAspect(video.videoWidth / video.videoHeight);
+            }}
+          />
+          <QuadEditor
+            width={previewSize.current.width}
+            height={previewSize.current.height}
+            quads={quads}
+            selected={quads.map((_, i) => i)}
+            editing={null}
+          />
+        </div>
+
+        {camera.error && (
+          <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-4 bg-stone-950 px-8 text-center">
+            <p className="text-sm text-stone-300">{camera.error}</p>
+          </div>
+        )}
+
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between p-3">
+          <IconButton label="Abbrechen" onClick={onCancel} className="pointer-events-auto">
+            <BackIcon />
+          </IconButton>
+          <span className="rounded-full bg-black/50 px-3 py-1.5 text-xs backdrop-blur">
+            Nahaufnahme {position + 1} von {targets.length}
+          </span>
+          <IconButton
+            label="Kameraeinstellungen"
+            onClick={() => setSettingsOpen(true)}
+            className="pointer-events-auto"
+          >
+            <GearIcon />
+          </IconButton>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-2 px-4">
+          {(status || hint || quads.length > 0) && (
+            <span className="rounded-full bg-black/60 px-3 py-1.5 text-center text-sm backdrop-blur">
+              {status ?? hint ?? 'Foto erkannt – ruhig halten'}
+            </span>
+          )}
+        </div>
+
+        {settingsOpen && (
+          <CameraSettings
+            cameras={camera.cameras}
+            activeId={camera.activeId}
+            zoom={camera.zoom}
+            zoomValue={camera.zoomValue}
+            focusModes={camera.focusModes}
+            focusMode={camera.focusMode}
+            resolution={camera.resolution}
+            onPick={(id) => {
+              chosen.current = true;
+              fellBack.current = false;
+              rememberCamera(id);
+              setDeviceId(id);
+            }}
+            onZoom={(value) => void camera.setZoom(value)}
+            onFocus={(mode) => void camera.setFocusMode(mode)}
+            onClose={() => setSettingsOpen(false)}
+          />
+        )}
+      </div>
+
+      <div className="shrink-0 space-y-3 border-t border-white/10 bg-stone-950 px-4 pt-3 pb-6">
+        <div className="flex items-center justify-between gap-4">
+          <img
+            src={target.url}
+            alt={`Foto ${position + 1}`}
+            className="size-16 shrink-0 rounded-md object-cover ring-1 ring-white/20"
+          />
+
+          <button
+            type="button"
+            aria-label="Auslösen"
+            data-testid="closeup-shutter"
+            onClick={() => void takeShot()}
+            disabled={Boolean(status)}
+            className="size-18 rounded-full border-4 border-white/80 bg-amber-400 transition active:scale-95 disabled:opacity-40"
+          />
+
+          <div className="flex w-16 justify-end">
+            <Button onClick={advance} className="px-3 py-1.5 text-xs">
+              Überspringen
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex justify-center">
+          <Button
+            variant={auto ? 'primary' : 'ghost'}
+            onClick={() => setAuto(!auto)}
+            className="rounded-full px-3 py-1.5 text-xs"
+          >
+            Auslöser: {auto ? 'automatisch' : 'manuell'}
+          </Button>
+        </div>
+
+        <p className="text-center text-[11px] leading-relaxed text-stone-500">
+          Dieses Foto formatfüllend aufnehmen. Spiegelungen sind kein Problem – die Seitenaufnahme
+          liefert die Stellen, die hier glänzen.
+        </p>
+      </div>
+    </div>
+  );
+}
