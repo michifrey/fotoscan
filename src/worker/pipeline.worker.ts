@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import { detectPhotoQuads } from '../lib/imaging/detect';
-import { extractPhotos } from '../lib/imaging/stack';
+import { refinePhoto } from '../lib/imaging/closeup';
+import { mergePhotos } from '../lib/imaging/stack';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
 import type { Quad, RgbaImage } from '../lib/imaging/types';
 
@@ -12,18 +13,21 @@ export interface TransferImage {
 
 export type WorkerRequest =
   | { id: number; type: 'detect'; image: TransferImage; analysisSize?: number }
+  | { id: number; type: 'merge'; frames: TransferImage[]; quads: Quad[] }
   | {
       id: number;
-      type: 'extract';
-      frames: TransferImage[];
-      quads: Quad[];
+      type: 'refine';
+      reference: TransferImage;
+      closeup: TransferImage | null;
+      quad: Quad | null;
       options: EnhanceOptions;
       rotation: number;
     };
 
 export type WorkerResponse =
   | { id: number; type: 'detect'; quads: Quad[] }
-  | { id: number; type: 'extract'; images: TransferImage[] }
+  | { id: number; type: 'merge'; images: TransferImage[] }
+  | { id: number; type: 'refine'; image: TransferImage }
   | { id: number; type: 'error'; message: string };
 
 function toRgba(image: TransferImage): RgbaImage {
@@ -45,18 +49,23 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       return;
     }
 
-    const images = extractPhotos(
-      request.frames.map(toRgba),
-      request.quads,
-      request.options,
-      request.rotation,
-    ).map(toTransfer);
+    if (request.type === 'merge') {
+      const images = mergePhotos(request.frames.map(toRgba), request.quads).map(toTransfer);
+      const response: WorkerResponse = { id: request.id, type: 'merge', images };
+      self.postMessage(
+        response,
+        images.map((image) => image.data),
+      );
+      return;
+    }
 
-    const response: WorkerResponse = { id: request.id, type: 'extract', images };
-    self.postMessage(
-      response,
-      images.map((image) => image.data),
+    const closeup =
+      request.closeup && request.quad ? { image: toRgba(request.closeup), quad: request.quad } : null;
+    const image = toTransfer(
+      refinePhoto(toRgba(request.reference), closeup, request.options, request.rotation),
     );
+    const response: WorkerResponse = { id: request.id, type: 'refine', image };
+    self.postMessage(response, [image.data]);
   } catch (error) {
     const response: WorkerResponse = {
       id: request.id,

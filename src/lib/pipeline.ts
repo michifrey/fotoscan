@@ -1,6 +1,8 @@
 import type { EnhanceOptions } from './imaging/enhance';
 import { detectPhotoQuads } from './imaging/detect';
-import { extractPhotos } from './imaging/stack';
+import { refinePhoto } from './imaging/closeup';
+import type { Closeup } from './imaging/closeup';
+import { mergePhotos } from './imaging/stack';
 import type { Quad, RgbaImage } from './imaging/types';
 import type { TransferImage, WorkerRequest, WorkerResponse } from '../worker/pipeline.worker';
 
@@ -64,24 +66,52 @@ export async function detect(image: RgbaImage, analysisSize?: number): Promise<Q
 export interface ExtractRequest {
   frames: RgbaImage[];
   quads: Quad[];
+}
+
+/** Entzerren und entspiegeln – für alle erkannten Fotos einer Aufnahme. */
+export async function mergePhotosAsync({ frames, quads }: ExtractRequest): Promise<RgbaImage[]> {
+  if (quads.length === 0) return [];
+  const payload = frames.map(toTransfer);
+  try {
+    const response = await send({ id: nextId++, type: 'merge', frames: payload, quads }, payload.map((p) => p.data));
+    if (response.type === 'merge') return response.images.map(fromTransfer);
+    return [];
+  } catch {
+    return mergePhotos(frames, quads);
+  }
+}
+
+export interface RefineRequest {
+  reference: RgbaImage;
+  closeup: Closeup | null;
   options: EnhanceOptions;
   rotation: number;
 }
 
-/** Entzerren, entspiegeln, aufhellen – für alle erkannten Fotos einer Aufnahme. */
-export async function extract({ frames, quads, options, rotation }: ExtractRequest): Promise<RgbaImage[]> {
-  if (quads.length === 0) return [];
-  const payload = frames.map(toTransfer);
+/**
+ * Das fertige Foto: die Seitenaufnahme, wenn nötig verrechnet mit der
+ * Nahaufnahme, dann aufgehellt und gedreht.
+ */
+export async function refine({ reference, closeup, options, rotation }: RefineRequest): Promise<RgbaImage> {
+  const referencePayload = toTransfer(reference);
+  const closeupPayload = closeup ? toTransfer(closeup.image) : null;
+  const transfer = closeupPayload ? [referencePayload.data, closeupPayload.data] : [referencePayload.data];
   try {
-    const response = await send({ id: nextId++, type: 'extract', frames: payload, quads, options, rotation }, payload.map((p) => p.data));
-    if (response.type === 'extract') return response.images.map(fromTransfer);
-    return [];
+    const response = await send(
+      {
+        id: nextId++,
+        type: 'refine',
+        reference: referencePayload,
+        closeup: closeupPayload,
+        quad: closeup ? closeup.quad : null,
+        options,
+        rotation,
+      },
+      transfer,
+    );
+    if (response.type === 'refine') return fromTransfer(response.image);
+    throw new Error('Unerwartete Antwort');
   } catch {
-    return extractLocally({ frames, quads, options, rotation });
+    return refinePhoto(reference, closeup, options, rotation);
   }
-}
-
-/** Gleiche Verarbeitung ohne Worker – Rückfallebene und Grundlage der Tests. */
-export function extractLocally({ frames, quads, options, rotation }: ExtractRequest): RgbaImage[] {
-  return extractPhotos(frames, quads, options, rotation);
 }

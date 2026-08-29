@@ -19,6 +19,11 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
   entsteht eine Aufnahme. Weil eine Spiegelung mit dem Blickwinkel über das
   Foto wandert, sitzt sie in jeder der fünf Aufnahmen woanders und fällt beim
   Verrechnen als heller Ausreisser heraus.
+- **Nahaufnahmen für die Auflösung.** Auf der Seitenaufnahme teilen sich alle
+  Fotos einer Seite die Bildpunkte der Kamera; für das einzelne Foto bleiben ein
+  paar hundert. Wer will, geht danach jedes Foto einzeln noch einmal aus der
+  Nähe an – das bringt ein Vielfaches an Auflösung. Die Spiegelung, die sich aus
+  der Nähe unweigerlich einstellt, rechnet die Seitenaufnahme wieder heraus.
 - **Aufhellen.** Tonwerte spreizen, leicht nachschärfen und – abschaltbar – den
   Gelbstich vergilbter Abzüge abschwächen.
 - **Objektiv wählen.** Moderne Telefone haben mehrere Rückkameras, und der
@@ -40,8 +45,11 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
    unten und links neigen. Jeder Punkt hakt sich ab, sobald der Ring darauf
    liegt. **Fertig** bricht früher ab und rechnet mit dem, was da ist.
 4. Im Schritt **Zuschnitt prüfen** einzelne Fotos über das Häkchen abwählen,
-   Ecken bei Bedarf nachziehen, drehen, speichern.
-5. Über **Exportieren** wandert das ganze Album auf den Rechner oder in eine
+   Ecken bei Bedarf nachziehen, drehen.
+5. Wer es schärfer will: **Nahaufnahmen → Aufnehmen**. Die App geht die Fotos
+   der Reihe nach durch; jedes wird formatfüllend aufgenommen, einzeln
+   überspringbar. Danach zurück im Zuschnitt speichern.
+6. Über **Exportieren** wandert das ganze Album auf den Rechner oder in eine
    andere App.
 
 Ohne Kamerazugriff – etwa am Rechner – lässt sich über **Galerie** ein
@@ -73,6 +81,7 @@ kein WASM-Download. Die Pipeline liegt in [`src/lib/imaging/`](src/lib/imaging):
 | Entzerren | `warp.ts` | Homographie über ein 8×8-Gleichungssystem, bilineare Abtastung |
 | Aufnahmen zuordnen | `detect.ts`, `stack.ts` | jede Aufnahme einzeln erkennen und ihr Viereck der Grundaufnahme zuordnen |
 | Entspiegeln | `destack.ts` | Aufnahmen ausrichten, pro Pixel den mittleren Helligkeitswert nehmen |
+| Nahaufnahme verrechnen | `closeup.ts` | Seitenaufnahme auf die Nahaufnahme hochziehen, Glanzstellen daraus ersetzen |
 | Aufhellen | `enhance.ts` | Tonwertspreizung über die Helligkeit, Grauwelt-Weissabgleich, Unschärfemaske |
 
 Drei Punkte, die den Unterschied machen:
@@ -94,6 +103,17 @@ Drei Punkte, die den Unterschied machen:
   Grundaufnahme zugeordnet. Bei kräftiger Bewegung halbiert das den Fehler
   gegenüber dem gemeinsamen Viereck; wird ein Foto in einer Aufnahme nicht
   sicher wiedergefunden, bleibt diese Aufnahme aussen vor.
+
+- **Nur der Glanz wird ersetzt.** Bei der Nahaufnahme liefert die
+  Seitenaufnahme allein die Stellen, an denen die Nahaufnahme glänzt – überall
+  sonst bliebe sie hochgerechnet und weich. Gesucht wird deshalb, wo die
+  Nahaufnahme deutlich heller ist als die Seitenaufnahme; der Rest bleibt
+  unangetastet. Zwei Filter halten das sauber: Eine scharfe Aufnahme ist an
+  ihren hellsten Punkten fast überall etwas heller als eine weiche, und ohne
+  Filter zöge sich die Weichheit über hunderte Streusel ins ganze Bild. Es
+  zählt daher nur, was zusammenhängt und einen Fleck bildet. Passen die beiden
+  Aufnahmen nicht zueinander – falsches Foto erwischt –, verrät das ihr
+  Zusammenhang, und die Nahaufnahme bleibt, wie sie ist.
 
 Die schweren Schritte laufen in einem Web Worker
 ([`src/worker/pipeline.worker.ts`](src/worker/pipeline.worker.ts)); scheitert
@@ -120,13 +140,17 @@ einbinden.
   dunkler Seite, Leserichtung, der Griff durch die Albumseite hindurch, das
   Entfernen wandernder Spiegelungen und der Zuschnitt ohne hellen Saum. Dazu
   eine Aufnahmereihe mit bewegter Kamera, die belegt, dass die Zuordnung je
-  Aufnahme das Ergebnis messbar verbessert.
+  Aufnahme das Ergebnis messbar verbessert. Für die Nahaufnahmen: dass der
+  Glanz verschwindet, die Zeichnung bleibt, ausserhalb des Glanzes kein
+  Bildpunkt angefasst wird und eine unpassende Vergleichsaufnahme folgenlos
+  bleibt.
 - `e2e/` fährt in Chromium zwei Wege ab. Ohne Kameraerlaubnis: Album anlegen,
   Albumseite über „Galerie" öffnen, drei erkannte Fotos, eines abwählen,
   speichern, Neustart überstehen. Mit künstlichem Kamerabild: auslösen, die
   vier Punkte über nachgestellte Neigungswerte anfahren, das gerechnete Foto
   speichern – und der Rückfall auf die Zeitsteuerung, wenn kein Lagesensor
-  antwortet.
+  antwortet. Dazu die Runde der Nahaufnahmen: der Reihe nach durchgehen,
+  überspringen, abbrechen.
 
 ## Veröffentlichen
 
