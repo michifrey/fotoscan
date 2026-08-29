@@ -16,6 +16,8 @@ export interface BookPhoto {
   title?: string;
   taken?: string;
   note?: string;
+  /** Die Handschrift von der Albumseite, als Ausschnitt. */
+  writing?: { data: Uint8Array; width: number; height: number };
 }
 
 export interface BookPage {
@@ -40,6 +42,8 @@ const HEIGHT = 842;
 const MARGIN = 40;
 /** Platz unter dem Bild für Titel, Datum und Notiz. */
 const CAPTION = 74;
+/** Höhe, auf die der Handschrift-Ausschnitt gebracht wird. */
+const WRITING = 34;
 
 type Obj = { id: number; body: Uint8Array };
 
@@ -82,9 +86,22 @@ export function buildBook({ title, subtitle, photos, pages = [] }: BookOptions):
       sheet(picture('Im0', page, [], page.label, true), [{ name: 'Im0', id }]);
     }
     const id = add(imageObject(photo.data, photo.width, photo.height));
+    const images = [{ name: 'Im0', id }];
+    let hand: { name: string; width: number; height: number } | undefined;
+    if (photo.writing) {
+      images.push({ name: 'Im1', id: add(imageObject(photo.writing.data, photo.writing.width, photo.writing.height)) });
+      hand = { name: 'Im1', width: photo.writing.width, height: photo.writing.height };
+    }
     sheet(
-      picture('Im0', photo, [photo.title, photo.taken, photo.note].filter(Boolean) as string[], undefined, false),
-      [{ name: 'Im0', id }],
+      picture(
+        'Im0',
+        photo,
+        [photo.title, photo.taken, photo.note].filter(Boolean) as string[],
+        undefined,
+        false,
+        hand,
+      ),
+      images,
     );
   });
 
@@ -106,9 +123,10 @@ function picture(
   lines: string[],
   heading: string | undefined,
   faint: boolean,
+  writing?: { name: string; width: number; height: number },
 ): string {
   const top = heading ? HEIGHT - MARGIN - 26 : HEIGHT - MARGIN;
-  const bottom = MARGIN + (lines.length > 0 ? CAPTION : 0);
+  const bottom = MARGIN + (lines.length > 0 ? CAPTION : 0) + (writing ? WRITING + 14 : 0);
   const room = { width: WIDTH - 2 * MARGIN, height: top - bottom };
   const factor = Math.min(room.width / image.width, room.height / image.height);
   const drawn = { width: image.width * factor, height: image.height * factor };
@@ -128,6 +146,15 @@ function picture(
     parts.push(text(value, MARGIN, line, index === 0 ? 12 : 10, index === 0 ? 0.15 : 0.45, index === 0));
     line -= index === 0 ? 16 : 13;
   });
+
+  // Und darunter die Handschrift der Albumseite – der Teil der Beschriftung,
+  // den niemand abgetippt hat.
+  if (writing) {
+    const scale = Math.min(WRITING / writing.height, (WIDTH - 2 * MARGIN) / writing.width);
+    const w = writing.width * scale;
+    const h = writing.height * scale;
+    parts.push(`q ${round(w)} 0 0 ${round(h)} ${round(MARGIN)} ${round(line - h)} cm /${writing.name} Do Q`);
+  }
   return parts.join('\n');
 }
 

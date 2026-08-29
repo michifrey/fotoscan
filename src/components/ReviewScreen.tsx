@@ -3,6 +3,7 @@ import { blobFromImageData, imageDataFromBlob, toImageData } from '../lib/canvas
 import { enhance } from '../lib/imaging/enhance';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
 import { outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
+import { cropWriting, findWriting } from '../lib/imaging/writing';
 import { scaleQuad } from '../lib/imaging/geometry';
 import type { Quad } from '../lib/imaging/types';
 import { hasGlare } from '../lib/imaging/glare';
@@ -18,6 +19,8 @@ export interface ExtractedPhoto {
   blob: Blob;
   width: number;
   height: number;
+  /** Die handschriftliche Bildunterschrift von der Seite, als Ausschnitt. */
+  writing?: { blob: Blob; width: number; height: number };
 }
 
 /** Die Aufnahme der ganzen Albumseite, verkleinert zum Aufbewahren. */
@@ -146,6 +149,25 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       // Nachbearbeitung – sie ist die Vorlage für die Nahaufnahmen.
       const references = await mergePhotosAsync({ frames: shot.frames, quads: chosen });
 
+      // Die Handschrift wird auf der verkleinerten Fassung gesucht – das
+      // genügt, um sie zu finden –, ausgeschnitten aber aus der vollen
+      // Aufnahme, sonst wäre sie nicht mehr zu lesen.
+      const writings = new Map<number, { blob: Blob; width: number; height: number }>();
+      for (const entry of findWriting(small.image, chosen.map((quad) => scaleQuad(quad, small.scale)))) {
+        const box = {
+          minX: Math.round(entry.box.minX / small.scale),
+          minY: Math.round(entry.box.minY / small.scale),
+          maxX: Math.round(entry.box.maxX / small.scale),
+          maxY: Math.round(entry.box.maxY / small.scale),
+        };
+        const crop = cropWriting(frame, { box, photo: entry.photo }, Math.round(12 / small.scale), chosen);
+        writings.set(entry.photo, {
+          blob: await blobFromImageData(crop, 0.9),
+          width: crop.width,
+          height: crop.height,
+        });
+      }
+
       const photos: ExtractedPhoto[] = [];
       for (let i = 0; i < references.length; i++) {
         if (references.length > 1) setProgress(`Foto ${i + 1} von ${references.length}`);
@@ -164,6 +186,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
           blob: await blobFromImageData(image, 0.92),
           width: image.width,
           height: image.height,
+          writing: writings.get(i),
         });
       }
       // Die Übersichtsaufnahme kommt mit ins Album: Sie hält fest, wie die
@@ -177,7 +200,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       setProgress(null);
       setSaving(false);
     }
-  }, [closeups, onAccept, options, quads, rotation, selected, shot.frames, small]);
+  }, [closeups, frame, onAccept, options, quads, rotation, selected, shot.frames, small]);
 
   /** Vorschaubilder der ausgewählten Fotos für die Nahaufnahmen-Runde. */
   const openCloseups = useCallback(async () => {

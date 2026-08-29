@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Page, Scan } from '../lib/storage';
 import { BackIcon, Button, IconButton } from './ui';
 
@@ -45,6 +45,14 @@ export function PhotoViewer({
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [sheet, setSheet] = useState<'caption' | 'page' | null>(null);
   const [chrome, setChrome] = useState(true);
+
+  // Die Handschrift der Seite, als Bild – für dieses Foto und seine Nachbarn.
+  const writing = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of scans) if (entry.writing) map.set(entry.id, URL.createObjectURL(entry.writing));
+    return map;
+  }, [scans]);
+  useEffect(() => () => writing.forEach((url) => URL.revokeObjectURL(url)), [writing]);
 
   const area = useRef<HTMLDivElement | null>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
@@ -210,10 +218,18 @@ export function PhotoViewer({
 
           <div className="absolute inset-x-0 bottom-0 space-y-3 bg-gradient-to-t from-black/90 to-transparent px-4 pt-8 pb-6">
             <div className="min-h-10 text-center">
+              {writing.has(scan.id) && (
+                <img
+                  src={writing.get(scan.id)}
+                  alt="Handschrift von der Albumseite"
+                  data-testid="writing"
+                  className="mx-auto mb-2 max-h-16 rounded bg-stone-100/90 px-1 py-0.5 object-contain"
+                />
+              )}
               {scan.title && <p className="text-sm font-medium text-stone-100">{scan.title}</p>}
               {scan.taken && <p className="text-xs text-stone-400">{scan.taken}</p>}
               {scan.note && <p className="mt-1 line-clamp-2 text-xs text-stone-400">{scan.note}</p>}
-              {!scan.title && !scan.taken && !scan.note && (
+              {!scan.title && !scan.taken && !scan.note && !writing.has(scan.id) && (
                 <p className="text-xs text-stone-500">Ohne Beschriftung</p>
               )}
             </div>
@@ -239,7 +255,12 @@ export function PhotoViewer({
       )}
 
       {sheet === 'caption' && (
-        <CaptionSheet scan={scan} onClose={() => setSheet(null)} onSave={onSave} />
+        <CaptionSheet
+          scan={scan}
+          writing={writing.get(scan.id)}
+          onClose={() => setSheet(null)}
+          onSave={onSave}
+        />
       )}
 
       {sheet === 'page' && page && (
@@ -269,10 +290,12 @@ export function PhotoViewer({
 /** Titel, Datum und Notiz zu einem Foto. */
 function CaptionSheet({
   scan,
+  writing,
   onClose,
   onSave,
 }: {
   scan: Scan;
+  writing?: string;
   onClose: () => void;
   onSave: (scan: Scan) => Promise<void>;
 }) {
@@ -303,6 +326,19 @@ function CaptionSheet({
         onClick={(event) => event.stopPropagation()}
       >
         <h2 className="text-sm font-medium">Beschriften</h2>
+        {writing && (
+          <div>
+            <img
+              src={writing}
+              alt="Handschrift von der Albumseite"
+              className="max-h-20 w-full rounded-lg bg-stone-100 object-contain py-1"
+            />
+            <p className="mt-1 text-[11px] text-stone-500">
+              So stand es auf der Seite. Abgeschrieben wird von Hand – geraten wäre schlimmer als
+              nichts.
+            </p>
+          </div>
+        )}
         <Field label="Titel" value={title} onChange={setTitle} placeholder="Oma im Garten" testId="caption-title" />
         <Field
           label="Wann"

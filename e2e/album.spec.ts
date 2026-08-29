@@ -46,6 +46,27 @@ test('Foto beschriften, wiederfinden und die Beschriftung behalten', async ({ pa
   await expect(page.getByTestId('count')).toHaveText('1 von 3 Fotos');
 });
 
+test('die Handschrift von der Seite steht beim Foto', async ({ page }) => {
+  await albumMitDreiFotos(page, 'Handschrift');
+
+  // Unter dem ersten Foto der Vorlage steht eine Zeile. Sie wird beim Speichern
+  // ausgeschnitten und liegt im Betrachter unter dem Bild.
+  await page.getByTestId('photo-0').click();
+  await expect(page.getByTestId('writing')).toBeVisible();
+
+  // Im Beschriften-Blatt steht sie zum Abschreiben daneben.
+  await page.getByTestId('caption-open').click();
+  await expect(page.getByRole('img', { name: 'Handschrift von der Albumseite' }).last()).toBeVisible();
+  await page.getByTestId('caption-title').fill('Abgeschrieben');
+  await page.getByTestId('caption-save').click();
+  await expect(page.getByTestId('viewer').getByText('Abgeschrieben')).toBeVisible();
+
+  // Die anderen Fotos haben keine – und behaupten es auch nicht.
+  await page.getByRole('button', { name: 'Schliessen' }).click();
+  await page.getByTestId('photo-1').click();
+  await expect(page.getByTestId('writing')).toHaveCount(0);
+});
+
 test('Fotos einer Albumseite bleiben zusammen', async ({ page }) => {
   await albumMitDreiFotos(page, 'Seiten');
 

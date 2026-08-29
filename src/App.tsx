@@ -90,6 +90,9 @@ export function App() {
           width: photo.width,
           height: photo.height,
           pageId: stored?.id,
+          writing: photo.writing?.blob,
+          writingWidth: photo.writing?.width,
+          writingHeight: photo.writing?.height,
         });
       }
       await reloadScans(album);

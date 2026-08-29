@@ -49,6 +49,11 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
 - **Das Album durchsehen.** Vollbild, wischen zum Blättern, zwei Finger zum
   Vergrössern. Jedes Foto lässt sich beschriften – Titel, „Sommer 1978“, eine
   Notiz – und darüber wiederfinden; die Reihenfolge wird von Hand gezogen.
+- **Die Handschrift bleibt beim Foto.** Was auf der Albumseite danebensteht,
+  wird als Bildausschnitt mitgenommen und liegt im Betrachter unter dem Bild –
+  auch im gedruckten Buch. Abgeschrieben wird sie nicht: Alte Handschrift zu
+  lesen ist eine eigene Wissenschaft, und geraten wäre schlimmer als gar
+  nichts. Zum Abtippen steht sie beim Beschriften daneben.
 - **Seiten bleiben zusammen.** Zu jeder Aufnahme wird die Übersichtsaufnahme
   der Albumseite aufbewahrt. Damit bleibt erhalten, welche Fotos nebeneinander
   lagen und was danebenstand – die Ansicht „Seiten“ zeigt das Album so, wie es
@@ -170,6 +175,30 @@ Fünf Punkte, die den Unterschied machen:
   Aufnahmen nicht zueinander – falsches Foto erwischt –, verrät das ihr
   Zusammenhang, und die Nahaufnahme bleibt, wie sie ist.
 
+## Die Handschrift
+
+Sie steht auf [`src/lib/imaging/writing.ts`](src/lib/imaging/writing.ts) und geht
+denselben Weg wie die Fotoerkennung, nur andersherum gelesen: Zieht man vom
+Untergrund die erkannten Fotos ab, bleibt übrig, was jemand mit der Hand
+danebengeschrieben hat. Vier Prüfungen trennen eine Zeile von allem anderen:
+
+- **Strichbreite.** Schrift verschwindet beim Erodieren um wenige Bildpunkte;
+  ein angeschnittenes Foto, ein Schatten, die Kante des Kartons überstehen es.
+- **Viele Teile.** Eine Zeile zerfällt in Buchstaben, Bögen, Punkte. Ein
+  Kratzer ist ein einziges langes Stück, mag er noch so dünn sein.
+- **Einheitliche Umgebung.** Schrift steht auf einer Fläche, die ringsum
+  dieselbe ist. Am Rand der Seite stossen zwei Flächen aneinander – das verrät
+  ihn. Gemessen wird die Umgebung selbst und nicht der Vergleich mit dem
+  grössten Untergrund im Bild: Liegt viel Tisch mit im Bild, gewinnt der Tisch,
+  und das Papier gälte plötzlich als Vordergrund.
+- **Bildunterschriften stehen unter dem Bild.** Liegt eine Zeile zwischen zwei
+  Fotos – der Regelfall auf einer vollen Seite –, gehört sie zu dem darüber,
+  auch wenn das andere ein paar Bildpunkte näher ist.
+
+Gesucht wird auf der verkleinerten Fassung, ausgeschnitten aus der vollen
+Aufnahme; die Fotos selbst bleiben aus dem Ausschnitt heraus, sonst stünde ein
+Streifen fremden Motivs in der Bildunterschrift.
+
 ## Das Album
 
 Alles bleibt im Gerät: `IndexedDB` hält Alben, Fotos und Seiten
@@ -223,8 +252,12 @@ einbinden.
   Messen der Helligkeit, dem weder ein Fenster neben dem Motiv noch eine helle
   Tischplatte ringsum etwas anhaben kann.
 - Für das Album: das Fotobuch (Deckblatt und Seitenzahl, unveränderte
-  JPEG-Daten, stimmende Querverweistabelle, Umlaute) – geprüft an der
-  geschriebenen Datei, nicht an der Absicht.
+  JPEG-Daten, stimmende Querverweistabelle, Umlaute, die Handschrift auf der
+  Seite) – geprüft an der geschriebenen Datei, nicht an der Absicht. Dazu die
+  Handschrift selbst: die Zeile unter dem Foto, je eine Zeile für zwei Fotos
+  nebeneinander, die Zeile zwischen zwei Fotos, eine Seite ganz ohne
+  Handschrift, eine Zeile weitab von jedem Foto – und ein Ausschnitt, der die
+  Nachbarfotos draussen lässt.
 - `e2e/` fährt in Chromium zwei Wege ab. Ohne Kameraerlaubnis: Album anlegen,
   Albumseite über „Galerie" öffnen, drei erkannte Fotos, eines abwählen,
   speichern, Neustart überstehen. Mit künstlichem Kamerabild: auslösen, die
@@ -232,8 +265,8 @@ einbinden.
   speichern – und der Rückfall auf die Zeitsteuerung, wenn kein Lagesensor
   antwortet. Dazu die Runde der Nahaufnahmen: der Reihe nach durchgehen,
   überspringen, abbrechen. Und das Album: beschriften, suchen, umsortieren per
-  Ziehen, die Seitenansicht, das Fotobuch herunterladen und die Erweiterung der
-  alten Datenbank.
+  Ziehen, die Seitenansicht, die Handschrift beim Foto, das Fotobuch
+  herunterladen und die Erweiterung der alten Datenbank.
 
 ## Veröffentlichen
 

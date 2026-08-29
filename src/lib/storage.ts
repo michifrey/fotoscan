@@ -27,6 +27,16 @@ export interface Scan {
   taken?: string;
   /** Längere Notiz: wer darauf ist, was dazugehört. */
   note?: string;
+  /**
+   * Die Handschrift von der Albumseite, als Bildausschnitt.
+   *
+   * Abgeschrieben wird sie nicht – alte Handschrift zu lesen ist eine eigene
+   * Wissenschaft, und geraten wäre schlimmer als gar nichts. Sie bleibt als
+   * Bild beim Foto stehen, dort, wo sie hingehört.
+   */
+  writing?: Blob;
+  writingWidth?: number;
+  writingHeight?: number;
 }
 
 /**
