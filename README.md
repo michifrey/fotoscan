@@ -31,8 +31,16 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
   Fotokanten sichtbar krumm. Die App wählt darum selbst die Hauptkamera und
   lässt die Wahl über das Einstellungssymbol ändern; dazu Zoom und Fokus,
   soweit das Gerät sie hergibt. Die Wahl wird gemerkt.
-- **Alben verwalten.** Scans werden pro Album im Gerät gespeichert und lassen
-  sich einzeln teilen oder als ZIP-Datei exportieren.
+- **Das Album durchsehen.** Vollbild, wischen zum Blättern, zwei Finger zum
+  Vergrössern. Jedes Foto lässt sich beschriften – Titel, „Sommer 1978“, eine
+  Notiz – und darüber wiederfinden; die Reihenfolge wird von Hand gezogen.
+- **Seiten bleiben zusammen.** Zu jeder Aufnahme wird die Übersichtsaufnahme
+  der Albumseite aufbewahrt. Damit bleibt erhalten, welche Fotos nebeneinander
+  lagen und was danebenstand – die Ansicht „Seiten“ zeigt das Album so, wie es
+  im Regal steht.
+- **Als Fotobuch weitergeben.** Das ganze Album als PDF: Deckblatt, ein Foto je
+  Seite, die Beschriftung darunter, auf Wunsch die Albumseiten dazwischen. Oder
+  weiterhin als ZIP mit den einzelnen Bildern.
 - **Offline.** Nach dem ersten Aufruf läuft die App als installierte PWA ohne
   Internetverbindung.
 
@@ -49,8 +57,10 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
 5. Wer es schärfer will: **Nahaufnahmen → Aufnehmen**. Die App geht die Fotos
    der Reihe nach durch; jedes wird formatfüllend aufgenommen, einzeln
    überspringbar. Danach zurück im Zuschnitt speichern.
-6. Über **Exportieren** wandert das ganze Album auf den Rechner oder in eine
-   andere App.
+6. Im Album: tippen zum Ansehen, **Ordnen** zum Umsortieren, **Beschriften**
+   für Titel, Datum und Notiz, das Suchfeld zum Wiederfinden.
+7. Über **Weitergeben** wandert das Album als Fotobuch (PDF) oder als ZIP auf
+   den Rechner oder in eine andere App.
 
 Ohne Kamerazugriff – etwa am Rechner – lässt sich über **Galerie** ein
 vorhandenes Bild öffnen und genauso verarbeiten.
@@ -115,6 +125,23 @@ Drei Punkte, die den Unterschied machen:
   Aufnahmen nicht zueinander – falsches Foto erwischt –, verrät das ihr
   Zusammenhang, und die Nahaufnahme bleibt, wie sie ist.
 
+## Das Album
+
+Alles bleibt im Gerät: `IndexedDB` hält Alben, Fotos und Seiten
+([`src/lib/storage.ts`](src/lib/storage.ts)). Ein Foto kennt seinen Platz im
+Album, seine Albumseite und seine Beschriftung; eine Seite hält ihre
+Übersichtsaufnahme. Ältere Alben aus der ersten Fassung bekommen ihren Platz
+beim Öffnen aus der Entstehungszeit – die Erweiterung geht ohne Zutun vonstatten
+und ist als Browsertest festgehalten.
+
+Das Fotobuch schreibt [`src/lib/pdf.ts`](src/lib/pdf.ts) von Hand, ohne
+Bibliothek. Der Grund ist der Kern der Sache: Die Fotos liegen bereits als JPEG
+vor, und ein JPEG ist im PDF ein gültiger Bilddatenstrom (`DCTDecode`). Sie
+wandern also unverändert hinein – nichts wird neu gerechnet, nichts neu
+komprimiert, und das Buch enthält dieselben Bildpunkte wie das Album. Text steht
+in Helvetica mit WinAnsi-Kodierung; die Umlaute deutscher Bildunterschriften
+sind damit abgedeckt.
+
 Die schweren Schritte laufen in einem Web Worker
 ([`src/worker/pipeline.worker.ts`](src/worker/pipeline.worker.ts)); scheitert
 das, rechnet dieselbe Funktion auf dem Hauptthread weiter.
@@ -144,13 +171,18 @@ einbinden.
   Glanz verschwindet, die Zeichnung bleibt, ausserhalb des Glanzes kein
   Bildpunkt angefasst wird und eine unpassende Vergleichsaufnahme folgenlos
   bleibt.
+- Für das Album: das Fotobuch (Deckblatt und Seitenzahl, unveränderte
+  JPEG-Daten, stimmende Querverweistabelle, Umlaute) – geprüft an der
+  geschriebenen Datei, nicht an der Absicht.
 - `e2e/` fährt in Chromium zwei Wege ab. Ohne Kameraerlaubnis: Album anlegen,
   Albumseite über „Galerie" öffnen, drei erkannte Fotos, eines abwählen,
   speichern, Neustart überstehen. Mit künstlichem Kamerabild: auslösen, die
   vier Punkte über nachgestellte Neigungswerte anfahren, das gerechnete Foto
   speichern – und der Rückfall auf die Zeitsteuerung, wenn kein Lagesensor
   antwortet. Dazu die Runde der Nahaufnahmen: der Reihe nach durchgehen,
-  überspringen, abbrechen.
+  überspringen, abbrechen. Und das Album: beschriften, suchen, umsortieren per
+  Ziehen, die Seitenansicht, das Fotobuch herunterladen und die Erweiterung der
+  alten Datenbank.
 
 ## Veröffentlichen
 

@@ -19,10 +19,17 @@ export interface ExtractedPhoto {
   height: number;
 }
 
+/** Die Aufnahme der ganzen Albumseite, verkleinert zum Aufbewahren. */
+export interface PageImage {
+  blob: Blob;
+  width: number;
+  height: number;
+}
+
 interface Props {
   shot: Shot;
   onCancel: () => void;
-  onAccept: (photos: ExtractedPhoto[]) => Promise<void>;
+  onAccept: (photos: ExtractedPhoto[], page: PageImage | null) => Promise<void>;
 }
 
 const PREVIEW_MAX = 420;
@@ -128,12 +135,18 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
           height: image.height,
         });
       }
-      await onAccept(photos);
+      // Die Übersichtsaufnahme kommt mit ins Album: Sie hält fest, wie die
+      // Fotos auf der Seite lagen und was daneben stand.
+      await onAccept(photos, {
+        blob: await blobFromImageData(small.image, 0.82),
+        width: small.image.width,
+        height: small.image.height,
+      });
     } finally {
       setProgress(null);
       setSaving(false);
     }
-  }, [closeups, onAccept, options, quads, rotation, selected, shot.frames]);
+  }, [closeups, onAccept, options, quads, rotation, selected, shot.frames, small]);
 
   /** Vorschaubilder der ausgewählten Fotos für die Nahaufnahmen-Runde. */
   const openCloseups = useCallback(async () => {

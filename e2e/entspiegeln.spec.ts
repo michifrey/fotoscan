@@ -60,7 +60,7 @@ test('vier Punkte abfahren und daraus ein entspiegeltes Foto rechnen', async ({ 
   await expect(page.getByTestId('shutter')).toBeVisible({ timeout: 60_000 });
 
   await page.getByRole('button', { name: 'Zurück' }).click();
-  await expect(page.getByText(/^1 Foto$/)).toBeVisible();
+  await expect(page.getByTestId('count')).toHaveText('1 von 1 Foto');
 });
 
 test('ohne Lagesensor übernimmt die Zeitsteuerung', async ({ page }) => {

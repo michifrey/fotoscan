@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Album, Scan } from './lib/storage';
+import type { Album, Page, Scan } from './lib/storage';
 import {
+  addPage,
   addScan,
   createAlbum,
   deleteAlbum,
   deleteScan,
   listAlbums,
+  listPages,
   listScans,
   renameAlbum,
+  reorderScans,
+  updateScan,
 } from './lib/storage';
 import { HomeScreen } from './components/HomeScreen';
 import { AlbumScreen } from './components/AlbumScreen';
 import { CaptureScreen } from './components/CaptureScreen';
 import type { Shot } from './components/CaptureScreen';
 import { ReviewScreen } from './components/ReviewScreen';
-import type { ExtractedPhoto } from './components/ReviewScreen';
+import type { ExtractedPhoto, PageImage } from './components/ReviewScreen';
 import { Spinner } from './components/ui';
 
 type View = 'home' | 'album' | 'capture' | 'review';
@@ -26,6 +30,7 @@ export function App() {
   const [covers, setCovers] = useState<Map<string, Blob>>(new Map());
   const [album, setAlbum] = useState<Album | null>(null);
   const [scans, setScans] = useState<Scan[]>([]);
+  const [pages, setPages] = useState<Page[]>([]);
   const [shot, setShot] = useState<Shot | null>(null);
   const [ready, setReady] = useState(false);
 
@@ -52,11 +57,13 @@ export function App() {
   const openAlbum = useCallback(async (entry: Album) => {
     setAlbum(entry);
     setScans(await listScans(entry.id));
+    setPages(await listPages(entry.id));
     setView('album');
   }, []);
 
   const reloadScans = useCallback(async (entry: Album) => {
     setScans(await listScans(entry.id));
+    setPages(await listPages(entry.id));
   }, []);
 
   const handleCreate = useCallback(
@@ -69,10 +76,21 @@ export function App() {
   );
 
   const handleAccept = useCallback(
-    async (photos: ExtractedPhoto[]) => {
+    async (photos: ExtractedPhoto[], page: PageImage | null) => {
       if (!album) return;
+      // Erst die Seite, dann die Fotos darauf – so weiss jedes Foto, wo es
+      // hergekommen ist.
+      const stored = page
+        ? await addPage({ albumId: album.id, blob: page.blob, width: page.width, height: page.height })
+        : null;
       for (const photo of photos) {
-        await addScan({ albumId: album.id, blob: photo.blob, width: photo.width, height: photo.height });
+        await addScan({
+          albumId: album.id,
+          blob: photo.blob,
+          width: photo.width,
+          height: photo.height,
+          pageId: stored?.id,
+        });
       }
       await reloadScans(album);
       void refreshAlbums();
@@ -124,6 +142,7 @@ export function App() {
       <AlbumScreen
         album={album}
         scans={scans}
+        pages={pages}
         onBack={() => {
           void refreshAlbums();
           setAlbum(null);
@@ -134,6 +153,15 @@ export function App() {
           await deleteScan(scan.id);
           await reloadScans(album);
           void refreshAlbums();
+        }}
+        onSaveScan={async (scan) => {
+          await updateScan(scan);
+          setScans((current) => current.map((entry) => (entry.id === scan.id ? scan : entry)));
+        }}
+        onReorder={async (next) => {
+          // Sofort anzeigen, dann sichern: Beim Ziehen soll nichts nachhinken.
+          setScans(next.map((scan, index) => ({ ...scan, order: index })));
+          await reorderScans(next);
         }}
         onRename={async (name) => {
           const updated = await renameAlbum(album, name);

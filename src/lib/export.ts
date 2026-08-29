@@ -1,5 +1,7 @@
 import { createZip, safeFileName } from './zip';
-import type { Album, Scan } from './storage';
+import { buildBook } from './pdf';
+import type { BookPhoto } from './pdf';
+import type { Album, Page, Scan } from './storage';
 
 export function downloadBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
@@ -64,6 +66,60 @@ export async function exportAlbum(album: Album, scans: Scan[]): Promise<'shared'
   }
   downloadBlob(await albumZip(album, scans), `${safeFileName(album.name)}.zip`);
   return 'downloaded';
+}
+
+/**
+ * Das Album als Fotobuch: eine PDF-Datei mit Deckblatt, einem Foto je Seite und
+ * den Beschriftungen darunter. Auf Wunsch steht vor den Fotos einer Albumseite
+ * deren Übersichtsaufnahme – dann liest sich das Buch wie das Original.
+ */
+export async function exportBook(
+  album: Album,
+  scans: Scan[],
+  pages: Page[],
+  withPages: boolean,
+): Promise<'shared' | 'downloaded'> {
+  const byId = new Map(pages.map((page) => [page.id, page]));
+  const photos: BookPhoto[] = [];
+  const sheets: (Awaited<ReturnType<typeof pageEntry>> | null)[] = [];
+  let seen: string | null = null;
+  let number = 0;
+
+  for (const scan of scans) {
+    photos.push({
+      data: new Uint8Array(await scan.blob.arrayBuffer()),
+      width: scan.width,
+      height: scan.height,
+      title: scan.title,
+      taken: scan.taken,
+      note: scan.note,
+    });
+
+    const page = scan.pageId ? byId.get(scan.pageId) : undefined;
+    const fresh = Boolean(page) && scan.pageId !== seen;
+    if (fresh) {
+      seen = scan.pageId ?? null;
+      number++;
+    }
+    sheets.push(withPages && fresh && page ? await pageEntry(page, number) : null);
+  }
+
+  const blob = buildBook({
+    title: album.name,
+    subtitle: new Date(album.createdAt).toLocaleDateString('de-CH'),
+    photos,
+    pages: sheets,
+  });
+  return shareOrDownload(blob, `${safeFileName(album.name)}.pdf`, album.name);
+}
+
+async function pageEntry(page: Page, number: number) {
+  return {
+    data: new Uint8Array(await page.blob.arrayBuffer()),
+    width: page.width,
+    height: page.height,
+    label: `Albumseite ${number}`,
+  };
 }
 
 export function formatBytes(bytes: number): string {
