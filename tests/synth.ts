@@ -237,3 +237,54 @@ export function addSoftShapes(img: RgbaImage, seed: number, count: number): void
     }
   }
 }
+
+/**
+ * Ein Abzug, der bei jedem Seed wirklich anders aussieht.
+ *
+ * `photoTexture` und `photoWithPaleArea` streuen zwar über den Seed, behalten
+ * aber ihre Bauart bei: dieselben Ortsfrequenzen, der helle Fleck immer an
+ * derselben Stelle. Auf eine Seite gelegt sehen mehrere davon einander zum
+ * Verwechseln ähnlich – gut, um die Erkennung zu prüfen, untauglich, um das
+ * Wiederfinden zu prüfen. Denn wer zwei nahezu gleiche Bilder auseinanderhält,
+ * hat nichts bewiesen, und wer es nicht tut, ist an einem Fall gescheitert,
+ * den es so nicht gibt.
+ *
+ * Hier ändern sich Grundton, Richtung und Frequenz der Struktur und Lage,
+ * Grösse und Helligkeit der Flecken mit dem Seed.
+ */
+export function variedPhoto(width: number, height: number, seed: number): RgbaImage {
+  const img = createRgba(width, height);
+  const rnd = lcg(seed * 2654435761);
+
+  const base: [number, number, number] = [80 + rnd() * 100, 75 + rnd() * 95, 65 + rnd() * 85];
+  const fx = 0.012 + rnd() * 0.07;
+  const fy = 0.012 + rnd() * 0.07;
+  const turn = rnd() * Math.PI;
+  const phase = rnd() * Math.PI * 2;
+
+  const blobs = Array.from({ length: 7 }, () => ({
+    x: rnd() * width,
+    y: rnd() * height,
+    rx: width * (0.07 + rnd() * 0.24),
+    ry: height * (0.07 + rnd() * 0.24),
+    tone: rnd() * 210 - 70,
+  }));
+
+  const cos = Math.cos(turn);
+  const sin = Math.sin(turn);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const u = x * cos - y * sin;
+      const v = x * sin + y * cos;
+      let shade = Math.sin(u * fx + phase) * 24 + Math.cos(v * fy - phase) * 19 + (rnd() - 0.5) * 14;
+      for (const blob of blobs) {
+        const d = ((x - blob.x) / blob.rx) ** 2 + ((y - blob.y) / blob.ry) ** 2;
+        if (d < 1) shade += blob.tone * (1 - Math.sqrt(d));
+      }
+      const i = (y * width + x) * 4;
+      for (let c = 0; c < 3; c++) img.data[i + c] = base[c] + shade;
+      img.data[i + 3] = 255;
+    }
+  }
+  return img;
+}
