@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { locate } from '../src/lib/imaging/locate';
+import { DUPLICATE_LOCATE, PAGE_LOCATE, PREVIEW_LOCATE } from '../src/lib/nahfuehrung';
 import { warpPerspective } from '../src/lib/imaging/warp';
 import { createRgba } from '../src/lib/imaging/types';
 import type { Quad, RgbaImage } from '../src/lib/imaging/types';
-import { drawTextureInQuad, fill, kartonTexture, rectQuad, variedPhoto } from './synth';
+import { drawTextureInQuad, fill, kartonTexture, photoTexture, rectQuad, variedPhoto } from './synth';
 
 /**
  * Das Foto der Seitenaufnahme im Nahbild wiederfinden.
@@ -128,5 +129,114 @@ describe('Nahaufnahme über die Seitenaufnahme zuschneiden', () => {
     const leer = createRgba(900, 675);
     fill(leer, 232, 226, 210);
     expect(locate(bezug, leer)).toBeNull();
+  });
+});
+
+/**
+ * Die weite Suche: das Foto auch von weitem wiederfinden.
+ *
+ * Der Anlass steht in einem Satz vom echten Album: „Es findet die Fotos nicht
+ * … eigentlich müsste mir die App sagen, ich soll näher ran, und mich führen."
+ * Die enge Suche kann das nicht – sie probiert nur formatfüllende Lagen und
+ * verwirft alles unter einem Zehntel der Bildfläche. Wer zu weit weg war,
+ * bekam `null`, sah nichts gezeichnet und las das Gegenteil einer Führung.
+ *
+ * An den echten Albumbildern gemessen: Die weite Suche findet das Ziel bis
+ * hinunter zu 4 % der Bildfläche mit höchstens 1,4 % Eckenfehler und schlug in
+ * keinem Kreuzversuch auf ein falsches Foto an. Diese Tests halten dasselbe an
+ * der synthetischen Vorlage fest, damit es jeden Bau überlebt.
+ */
+describe('die weite Suche für die Vorschau', () => {
+  const source = sheet();
+  const reference = fromPage(source, PHOTOS[0]);
+
+  /** Ein Ausschnitt, in dem das Foto nur diesen Anteil der Fläche füllt. */
+  function distantView(photo: Quad, areaShare: number): Quad {
+    const cx = (photo[0].x + photo[2].x) / 2;
+    const cy = (photo[0].y + photo[2].y) / 2;
+    const w = ((photo[1].x - photo[0].x) / Math.sqrt(areaShare)) * 1;
+    const h = ((photo[3].y - photo[0].y) / Math.sqrt(areaShare)) * 1;
+    return rectQuad(cx - w / 2, cy - h / 2, w, h, 0);
+  }
+
+  it('findet das Foto, wo die enge Suche längst aufgegeben hat', () => {
+    for (const share of [0.16, 0.08, 0.05]) {
+      const view = distantView(PHOTOS[0], share);
+      const frame = closeup(source, view, [900, 675]);
+      const t = truth(PHOTOS[0], view, [900, 675]);
+
+      // Gegenprobe im selben Atemzug: Die enge Suche gibt hier nichts her –
+      // fiele das, wäre die weite überflüssig.
+      expect(locate(reference, frame), `eng bei ${share}`).toBeNull();
+
+      const wide = locate(reference, frame, PREVIEW_LOCATE);
+      expect(wide, `weit bei ${share}`).not.toBeNull();
+      expect(cornerError(wide!, t)).toBeLessThan(900 * 0.03);
+    }
+  });
+
+  it('schlägt auch von weitem nicht auf das falsche Foto an', () => {
+    // Die Voraussetzung für den automatischen Wechsel in der Führung: Ein
+    // Fund ist eine Entscheidung, und die darf nicht raten.
+    const other = fromPage(source, PHOTOS[1]);
+    for (const share of [0.5, 0.16, 0.05]) {
+      const frame = closeup(source, distantView(PHOTOS[0], share), [900, 675]);
+      expect(locate(other, frame, PREVIEW_LOCATE)).toBeNull();
+    }
+  });
+
+  it('verortet die ganze Seite als Anker, auch wenn sie übers Bild hinausragt', () => {
+    // Wenn nicht einmal die weite Fotosuche trifft, bleibt die Seite selbst:
+    // Sie ist im Sucher, sobald man von weitem draufhält, und aus ihrer Lage
+    // fällt für jedes Foto der Ort im Bild – die Grundlage von „Näher heran
+    // an Foto N, es ist markiert".
+    const pageRef = warpPerspective(source, rectQuad(0, 0, ...SHEET, 0), 900, 675);
+    for (const spread of [1.0, 0.8]) {
+      // spread < 1: die Seite ragt übers Bild hinaus (mittlere Distanz).
+      const w = SHEET[0] * spread;
+      const h = SHEET[1] * spread;
+      const view = rectQuad((SHEET[0] - w) / 2, (SHEET[1] - h) / 2, w, h, 0);
+      const frame = closeup(source, view, [900, 675]);
+      expect(locate(pageRef, frame, PAGE_LOCATE), `Seite bei ${spread}`).not.toBeNull();
+    }
+  });
+
+  it('erkennt im Zuschnittvergleich dasselbe Foto wieder – und nur dieses', () => {
+    // Der Prüfstein gegen Doppelte: „lässt mich dreimal dasselbe Foto
+    // aufnehmen" darf nicht mehr gehen. An den echten Bildern: 9 von 9
+    // Wiederholungen erkannt, 0 Fehlalarme.
+    //
+    // Hier mit detailreicher Fototextur: Die weichen Verläufe von
+    // `variedPhoto` geben den NCC-Stücken nach dem Abtasten zu wenig Halt –
+    // echte Abzüge haben Korn und Zeichnung, und genau darauf steht der
+    // Vergleich.
+    const rich = createRgba(...SHEET);
+    fill(rich, 70, 50, 32);
+    drawTextureInQuad(rich, kartonTexture(90, 68, [232, 226, 210], 3), rectQuad(40, 40, 1520, 1120, 0));
+    // Foto 1 mit Korn (dort werden die Wiederholungen geprüft), Foto 2 aus
+    // einer anderen Texturfamilie: Zwei Seeds desselben Wellenmusters wären
+    // praktisch Zwillinge – ein Fall, den am echten Album nur der Nutzer
+    // entscheiden kann und der hier nichts beweisen würde.
+    drawTextureInQuad(rich, photoTexture(420, 320, 23), PHOTOS[0]);
+    drawTextureInQuad(rich, variedPhoto(400, 300, 61), PHOTOS[1]);
+
+    const crop = (photo: Quad, f: number, tilt: number) => {
+      const cx = (photo[0].x + photo[2].x) / 2;
+      const cy = (photo[0].y + photo[2].y) / 2;
+      const w = ((photo[1].x - photo[0].x) / f) * 1;
+      const h = ((photo[3].y - photo[0].y) / f) * 1;
+      const q = rectQuad(cx - w / 2, cy - h / 2, w, h, 0).map((p, k) => ({
+        x: p.x + (k === 1 ? tilt : -tilt / 2),
+        y: p.y + (k === 2 ? tilt : -tilt / 2),
+      })) as Quad;
+      return warpPerspective(rich, q, 420, 315);
+    };
+
+    const stored = crop(PHOTOS[0], 1, 0);
+    // Dieselbe Aufnahme, etwas anders getroffen: erkannt.
+    expect(locate(crop(PHOTOS[0], 0.92, 8), stored, DUPLICATE_LOCATE)).not.toBeNull();
+    expect(locate(crop(PHOTOS[0], 1.06, 5), stored, DUPLICATE_LOCATE)).not.toBeNull();
+    // Das andere Foto der Seite: kein Alarm.
+    expect(locate(crop(PHOTOS[1], 1, 0), stored, DUPLICATE_LOCATE)).toBeNull();
   });
 });

@@ -149,3 +149,4 @@ test('ein übersprungenes Foto kommt nicht sofort wieder, bleibt aber erreichbar
   await page.getByRole('button', { name: 'Überspringen' }).click();
   await expect(page.getByText('Foto 1 · 1 von 3')).toBeVisible();
 });
+

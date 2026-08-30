@@ -2,6 +2,7 @@
 import { detectAt, detectCloseup, detectPage, detectPhotoQuads, detectPhotosOnPage } from '../lib/imaging/detect';
 import { refinePhoto } from '../lib/imaging/closeup';
 import { locate } from '../lib/imaging/locate';
+import type { LocateOptions } from '../lib/imaging/locate';
 import { mergePhotos } from '../lib/imaging/stack';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
 import type { Pt, Quad, RgbaImage } from '../lib/imaging/types';
@@ -18,7 +19,7 @@ export type WorkerRequest =
   | { id: number; type: 'page'; image: TransferImage; analysisSize?: number }
   | { id: number; type: 'photos'; page: TransferImage }
   | { id: number; type: 'spot'; page: TransferImage; point: Pt }
-  | { id: number; type: 'locate'; reference: TransferImage; frame: TransferImage }
+  | { id: number; type: 'locate'; reference: TransferImage; frame: TransferImage; options?: LocateOptions }
   | { id: number; type: 'closeup'; frame: TransferImage }
   | {
       id: number;
@@ -96,7 +97,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     if (request.type === 'locate') {
-      const quad = locate(toRgba(request.reference), toRgba(request.frame));
+      const quad = locate(toRgba(request.reference), toRgba(request.frame), request.options);
       const response: WorkerResponse = { id: request.id, type: 'locate', quad };
       self.postMessage(response);
       return;

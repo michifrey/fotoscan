@@ -5,6 +5,7 @@ import { scaleQuad } from './imaging/geometry';
 import { refinePhoto } from './imaging/closeup';
 import type { Closeup } from './imaging/closeup';
 import { locate } from './imaging/locate';
+import type { LocateOptions } from './imaging/locate';
 import { mergePhotos } from './imaging/stack';
 import type { Pt, Quad, RgbaImage } from './imaging/types';
 import type { TransferImage, WorkerRequest, WorkerResponse } from '../worker/pipeline.worker';
@@ -167,18 +168,22 @@ export async function detectAtAsync(page: RgbaImage, point: Pt): Promise<Quad | 
 }
 
 /** Das Foto der Seitenaufnahme im Nahbild wiederfinden. */
-export async function locateAsync(reference: RgbaImage, frame: RgbaImage): Promise<Quad | null> {
+export async function locateAsync(
+  reference: RgbaImage,
+  frame: RgbaImage,
+  options?: LocateOptions,
+): Promise<Quad | null> {
   const small = forAnalysis(frame);
   const first = toTransfer(forAnalysis(reference).image);
   const second = toTransfer(small.image);
   try {
-    const response = await send({ id: nextId++, type: 'locate', reference: first, frame: second }, [
+    const response = await send({ id: nextId++, type: 'locate', reference: first, frame: second, options }, [
       first.data,
       second.data,
     ]);
     return response.type === 'locate' && response.quad ? scaleQuad(response.quad, small.scale) : null;
   } catch {
-    return locate(reference, frame);
+    return locate(reference, frame, options);
   }
 }
 

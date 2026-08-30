@@ -3,11 +3,13 @@ import { useCamera } from '../lib/camera';
 import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { blobFromImageData } from '../lib/canvas';
 import { detectCloseupAsync, locateAsync } from '../lib/pipeline';
+import { DUPLICATE_LOCATE, PAGE_LOCATE, PREVIEW_LOCATE, closeupGuidance, guidanceText } from '../lib/nahfuehrung';
+import type { Guidance } from '../lib/nahfuehrung';
 import { glareFrom } from '../lib/imaging/closeup';
 import { exposureOf, tooDark } from '../lib/imaging/exposure';
 import { framingText } from '../lib/framing';
 import { useAutoLight } from '../lib/light';
-import { polygonArea } from '../lib/imaging/geometry';
+import { outputSize, warpPerspective } from '../lib/imaging/warp';
 import type { Quad, RgbaImage } from '../lib/imaging/types';
 import { BackIcon, Button, IconButton } from './ui';
 import { QuadEditor } from './QuadEditor';
@@ -52,6 +54,14 @@ interface Pending {
   width: number;
   height: number;
   quad: Quad;
+  glare?: RgbaImage;
+  /**
+   * Die Aufnahme sieht aus wie ein Foto, das schon im Kasten ist. Dann wird
+   * gewarnt statt still übernommen – auch wenn der Zuschnitt sicher war. Bei
+   * Zwillingsabzügen (die es auf echten Seiten wirklich gibt) entscheidet der
+   * Nutzer, nie die App.
+   */
+  warning?: string;
 }
 
 /**
@@ -73,6 +83,14 @@ export interface CloseupOverview {
 interface Props {
   targets: CloseupTarget[];
   overview: CloseupOverview;
+  /**
+   * Die entzerrte Seite als Bild, mit den Ziel-Vierecken in ihren Koordinaten
+   * – der **Seitenanker**. Findet die Fotosuche das Ziel nicht (zu weit weg),
+   * wird stattdessen die Seite im Sucher verortet und das Ziel hineinprojiziert.
+   * Gemessen trägt das, solange die Seite 85–130 % des Bildes füllt, mit ~1 %
+   * Projektionsfehler.
+   */
+  pageReference: { image: RgbaImage; quads: Quad[] };
   existing: Map<number, CloseupShot>;
   onDone: (shots: Map<number, CloseupShot>) => void;
   onCancel: () => void;
@@ -112,7 +130,7 @@ const EXTRA_GAP = 220;
  * bekommt ein Vielfaches – und die Spiegelung, die sich dabei unweigerlich
  * einstellt, rechnet die Seitenaufnahme wieder heraus.
  */
-export function CloseupScreen({ targets, overview, existing, onDone, onCancel }: Props) {
+export function CloseupScreen({ targets, overview, pageReference, existing, onDone, onCancel }: Props) {
   const [deviceId, setDeviceId] = useState<string | null>(() => rememberedCamera());
   const camera = useCamera(true, deviceId);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -129,6 +147,8 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
   const [aspect, setAspect] = useState(3 / 4);
   /** Eine gemachte Aufnahme, deren Zuschnitt noch bestätigt werden will. */
   const [pending, setPending] = useState<Pending | null>(null);
+  /** Was der Sucher gerade weiss – und was der Nutzer als Nächstes tun soll. */
+  const [guidance, setGuidance] = useState<Guidance>({ kind: 'suchen' });
 
   const busy = useRef(false);
   const capturing = useRef(false);
@@ -138,6 +158,18 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
   const pendingRef = useRef(false);
   pendingRef.current = pending !== null;
   const fellBack = useRef(false);
+  /** Rundlauf der Zusatzproben, wenn das Ziel nicht gefunden wird. */
+  const probeStep = useRef(0);
+  /** Führung kurz festhalten, damit eine leere Probe sie nicht wegblinkt. */
+  const guidanceAge = useRef(0);
+  const lastGuidance = useRef<Guidance>({ kind: 'suchen' });
+  /**
+   * Die Zuschnitte der übernommenen Aufnahmen, klein – der Prüfstein gegen
+   * Doppelte. `locate` darauf erkannte in der Messung 9 von 9 Wiederholungen
+   * desselben Fotos und schlug bei verschiedenen Fotos nie an.
+   */
+  const crops = useRef(new Map<number, RgbaImage>());
+  const pendingCrop = useRef<RgbaImage | null>(null);
   const autoRef = useRef(auto);
   autoRef.current = auto && !settingsOpen;
 
@@ -150,6 +182,10 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
   const target = targets[position];
   const targetRef = useRef(target);
   targetRef.current = target;
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  const shotsRef = useRef(shots);
+  shotsRef.current = shots;
 
   useEffect(() => {
     if (chosen.current || deviceId !== null || camera.cameras.length === 0) return;
@@ -224,6 +260,8 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
     },
     [targets],
   );
+  const jumpToRef = useRef(jumpTo);
+  jumpToRef.current = jumpTo;
 
   /**
    * Die Nachfrage schliessen – mit oder ohne die Aufnahme.
@@ -238,13 +276,16 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
       URL.revokeObjectURL(pending.url);
       setPending(null);
       if (take) {
+        if (pendingCrop.current) crops.current.set(pending.index, pendingCrop.current);
         keep(pending.index, {
           blob: pending.blob,
           width: pending.width,
           height: pending.height,
           quad: pending.quad,
+          glare: pending.glare,
         });
       }
+      pendingCrop.current = null;
     },
     [keep, pending],
   );
@@ -303,7 +344,23 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
       const blob = await blobFromImageData(frame, 0.95);
       navigator.vibrate?.(30);
 
-      if (sure) {
+      // Bevor irgendetwas gilt: Ist das nicht längst im Kasten? Genau so sind
+      // am echten Album drei Nummern mit demselben Foto gefüllt worden. Der
+      // Zuschnitt wird gegen die schon übernommenen gehalten; findet `locate`
+      // ihn dort wieder, wird gewarnt statt still übernommen – bei
+      // Zwillingsabzügen entscheidet der Nutzer, nie die App.
+      const cropSize = outputSize(quad, 420);
+      const crop = warpPerspective(frame, quad, cropSize.width, cropSize.height);
+      let warning: string | undefined;
+      for (const [index, stored] of crops.current) {
+        if (index === target.index) continue;
+        if (await locateAsync(crop, stored, DUPLICATE_LOCATE)) {
+          warning = `Diese Aufnahme sieht aus wie Foto ${index + 1}, das schon aufgenommen ist.`;
+          break;
+        }
+      }
+
+      if (sure && !warning) {
         // Noch zwei kleine Aufnahmen: Sie zeigen dieselbe Fläche aus einem
         // minimal anderen Winkel und verraten damit, was an der ersten Glanz
         // war. Findet die Vorlage sie nicht wieder, bleibt es beim bisherigen
@@ -311,14 +368,17 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
         setStatus('Ruhig halten – Spiegelungen werden gemessen');
         const glare = await measureGlare(target.reference, { image: frame, quad });
         setStatus(null);
+        crops.current.set(target.index, crop);
         keep(target.index, { blob, width: frame.width, height: frame.height, quad, glare });
         return;
       }
 
-      // Unsicher: Der Zuschnitt wird gezeigt, bevor er gilt. Lieber ein Tipp
-      // mehr als ein Foto, das mitten durchs Motiv geschnitten im Album landet
-      // und dort erst auffällt.
+      // Unsicher oder verdächtig: Der Zuschnitt wird gezeigt, bevor er gilt.
+      // Lieber ein Tipp mehr als ein Foto, das doppelt oder mitten durchs
+      // Motiv geschnitten im Album landet und dort erst auffällt.
+      const glare = sure ? await measureGlare(target.reference, { image: frame, quad }) : undefined;
       setStatus(null);
+      pendingCrop.current = crop;
       setPending({
         index: target.index,
         blob,
@@ -326,6 +386,8 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
         width: frame.width,
         height: frame.height,
         quad,
+        glare,
+        warning,
       });
     } finally {
       capturing.current = false;
@@ -365,39 +427,105 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
           if (frame) {
             previewSize.current = { width: frame.width, height: frame.height };
             setAspect(frame.width / frame.height);
-            // Gefragt wird nicht „liegt hier irgendein grosses Viereck?". Auf
-            // einer Albumseite ist das grösste die **Seite**, und der
-            // Selbstauslöser ging los, während das Telefon noch weit weg war –
-            // genau das war am echten Album zu sehen. Gefragt wird, ob
-            // *dieses* Foto formatfüllend im Bild liegt, und das weiss die
-            // Seitenaufnahme: Sie zeigt es bereits.
+            // Zuerst die weite Suche nach dem **Ziel**: Sie sagt nicht nur
+            // „bereit", sondern auch „da liegt es, näher heran" – gemessen
+            // findet sie das Foto bis hinunter zu 4 % der Bildfläche. Erst
+            // wenn sie leer ausgeht, kommen reihum die Zusatzproben:
+            // Seitenanker, andere Referenzen, Kantensuche (fürs weisse Album).
             const current = targetRef.current;
-            let found = current ? await locateAsync(current.reference, frame) : null;
-            if (!found) {
-              // Findet die Seitenaufnahme es nicht wieder – anderes Licht,
-              // andere Schärfe –, wird über das Papier ringsum gefragt. Die
-              // frühere Kantensuche fand am echten Album fast nie etwas, und
-              // der Selbstauslöser ging deshalb nie los.
-              found = await detectCloseupAsync(frame);
+            let g: Guidance = { kind: 'suchen' };
+            if (current) {
+              const found = await locateAsync(current.reference, frame, PREVIEW_LOCATE);
+              const base = {
+                frame: { width: frame.width, height: frame.height },
+                fillMin: FILL_MIN,
+                targetIndex: current.index,
+                target: null,
+                page: null,
+                other: null,
+              };
+              if (found) {
+                g = closeupGuidance({ ...base, target: found });
+              } else {
+                const step = probeStep.current++ % 3;
+                if (step === 0) {
+                  const anchor = await locateAsync(pageReference.image, frame, PAGE_LOCATE);
+                  if (anchor) {
+                    g = closeupGuidance({
+                      ...base,
+                      page: {
+                        quad: anchor,
+                        width: pageReference.image.width,
+                        height: pageReference.image.height,
+                        photos: pageReference.quads,
+                        targetAt: positionRef.current,
+                      },
+                    });
+                  }
+                } else if (step === 1) {
+                  // Eine andere Referenz je Takt – liegt der Nutzer über einem
+                  // anderen Foto, folgt ihm die App, statt auf ihrer
+                  // Reihenfolge zu bestehen. Enge Suche: Nur formatfüllend
+                  // zählt als Entscheidung.
+                  const others = targets
+                    .map((entry, at) => ({ entry, at }))
+                    .filter(({ at }) => at !== positionRef.current);
+                  if (others.length > 0) {
+                    const pick = others[Math.floor(probeStep.current / 3) % others.length];
+                    const hit = await locateAsync(pick.entry.reference, frame);
+                    if (hit) {
+                      g = closeupGuidance({
+                        ...base,
+                        other: {
+                          at: pick.at,
+                          index: pick.entry.index,
+                          quad: hit,
+                          done: shotsRef.current.has(pick.entry.index),
+                        },
+                      });
+                    }
+                  }
+                } else {
+                  const edge = await detectCloseupAsync(frame);
+                  if (edge) g = closeupGuidance({ ...base, target: edge });
+                }
+              }
             }
-            const largest = found ? [found] : [];
-            const fills = found !== null && polygonArea(found) >= frame.width * frame.height * FILL_MIN;
+
+            // Eine leere Probe wirft die letzte Führung nicht sofort weg –
+            // die Proben laufen reihum, und ein Blinken je Takt führt niemanden.
+            if (g.kind === 'suchen' && guidanceAge.current < 6) {
+              guidanceAge.current++;
+              g = lastGuidance.current;
+            } else {
+              guidanceAge.current = 0;
+              lastGuidance.current = g;
+            }
+
+            if (g.kind === 'wechseln') {
+              navigator.vibrate?.(15);
+              jumpToRef.current(g.at);
+            }
+
+            const ready = g.kind === 'bereit';
+            const shown = 'quad' in g ? [g.quad] : [];
 
             const exposure = exposureOf(frame);
             measure(exposure);
 
             if (active) {
               setDark(tooDark(exposure));
+              setGuidance(g);
               setQuads((previous) => {
-                if (fills && isStable(previous, largest, Math.max(frame.width, frame.height) * 0.02)) {
+                if (ready && isStable(previous, shown, Math.max(frame.width, frame.height) * 0.02)) {
                   stableCount.current += 1;
                 } else {
                   stableCount.current = 0;
                 }
-                return fills ? largest : [];
+                return shown;
               });
 
-              if (autoRef.current && fills && !tooDark(exposure) && stableCount.current >= STABLE_TICKS) {
+              if (autoRef.current && ready && !tooDark(exposure) && stableCount.current >= STABLE_TICKS) {
                 void takeShotRef.current();
               }
             }
@@ -431,7 +559,15 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
               onChange={(_, quad) => setPending((current) => (current ? { ...current, quad } : current))}
             />
           </div>
-          <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-4">
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-2 px-4">
+            {pending.warning && (
+              <span
+                className="rounded-full bg-amber-500/90 px-3 py-1.5 text-center text-sm font-medium text-stone-950 backdrop-blur"
+                data-testid="nah-warnung"
+              >
+                {pending.warning}
+              </span>
+            )}
             <span className="rounded-full bg-black/60 px-3 py-1.5 text-center text-sm backdrop-blur" data-testid="nah-nachfrage">
               Passt der Zuschnitt? Ecken ziehen, dann übernehmen.
             </span>
@@ -525,12 +661,7 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
             }`}
             data-testid="nah-status"
           >
-            {status ??
-              (dark
-                ? framingText('dunkel', light)
-                : quads.length > 0
-                  ? 'Foto erkannt – ruhig halten'
-                  : 'Foto ganz ins Bild – die Ränder müssen knapp sichtbar bleiben')}
+            {status ?? (dark ? framingText('dunkel', light) : guidanceText(guidance, target.index))}
           </span>
         </div>
 
@@ -600,10 +731,9 @@ export function CloseupScreen({ targets, overview, existing, onDone, onCancel }:
         </div>
 
         <p className="text-center text-[11px] leading-relaxed text-stone-500">
-          Dieses Foto möglichst gross ins Bild nehmen, aber <em className="not-italic text-stone-300">ganz</em> –
-          ein schmaler Streifen Albumpapier ringsum sagt der App, wo es aufhört. Fehlt er, wird der
-          Zuschnitt nachgefragt statt geraten. Spiegelungen sind kein Problem – die Seitenaufnahme
-          liefert die Stellen, die hier glänzen.
+          Der Sucher führt: Er markiert das gesuchte Foto und sagt, ob du näher heran musst. Liegt
+          ein anderes Foto vor der Kamera, wechselt die App dorthin. Spiegelungen sind kein Problem
+          – sie werden aus mehreren Aufnahmen herausgerechnet.
         </p>
       </div>
     </div>

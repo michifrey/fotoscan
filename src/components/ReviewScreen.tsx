@@ -69,6 +69,8 @@ const PREVIEW_MAX = 420;
 const PAGE_MAX = 2200;
 /** Kantenlänge der Landkarte in der dritten Stufe – sie wird klein gezeigt. */
 const MAP_MAX = 520;
+/** Kantenlänge des Seitenankers – die Referenz fürs Wiederfinden im Sucher. */
+const ANCHOR_MAX = 900;
 
 /** Kantenlänge eines von Hand gesetzten Vierecks, als Anteil der Seitenbreite. */
 const HAND_SIZE = 0.22;
@@ -100,6 +102,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [targets, setTargets] = useState<CloseupTarget[] | null>(null);
   const [overview, setOverview] = useState<CloseupOverview | null>(null);
+  const [pageReference, setPageReference] = useState<{ image: RgbaImage; quads: Quad[] } | null>(null);
   /** Fotos, auf denen auch nach dem Verrechnen noch eine Spiegelung liegt. */
   const [glare, setGlare] = useState<number[]>([]);
 
@@ -409,6 +412,14 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       height: mapSize.height,
       quads: selected.map((index) => scaleQuad(quads[index], factor)),
     });
+    // Der Seitenanker: dieselbe Seite als Bild, gross genug fürs Wiederfinden
+    // im Sucher, mit den Ziel-Vierecken in seinen Koordinaten.
+    const anchorSize = outputSize(fullQuad(page.width, page.height), ANCHOR_MAX);
+    const anchorFactor = anchorSize.width / page.width;
+    setPageReference({
+      image: warpPerspective(page, fullQuad(page.width, page.height), anchorSize.width, anchorSize.height),
+      quads: selected.map((index) => scaleQuad(quads[index], anchorFactor)),
+    });
     setTargets(list);
   }, [page, quads, selected]);
 
@@ -421,16 +432,18 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       if (current) URL.revokeObjectURL(current.url);
       return null;
     });
+    setPageReference(null);
   }, []);
 
   // Nur was auch gespeichert wird, ist einen Hinweis wert.
   const betroffen = glare.filter((index) => selected.includes(index));
 
-  if (targets && overview) {
+  if (targets && overview && pageReference) {
     return (
       <CloseupScreen
         targets={targets}
         overview={overview}
+        pageReference={pageReference}
         existing={new Map()}
         onDone={(shots) => {
           closeCloseups();

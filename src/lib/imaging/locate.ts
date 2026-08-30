@@ -34,6 +34,19 @@ const WORK_SIZE = 260;
  */
 const FILLS = [0.95, 0.8, 0.65];
 
+export interface LocateOptions {
+  /**
+   * Die Füllgrade, die durchprobiert werden. Die Vorgabe sucht formatfüllend –
+   * das ist die enge Suche für den Auslöser, deren Zuschnitt hinterher gilt.
+   * Die Vorschau darf weiter suchen (kleinere Füllgrade), um zu sagen, **wo**
+   * das Foto liegt und dass man näher heran muss.
+   */
+  fills?: number[];
+  /** Kleinster und grösster Anteil, den der Fund am Bild haben darf. */
+  minShare?: number;
+  maxShare?: number;
+}
+
 /**
  * Zwei Anläufe: erst grosse Teilstücke mit weitem Fenster, dann kleine mit
  * engem. Grosse Stücke tragen mehr Inhalt und lassen sich kaum verwechseln,
@@ -64,7 +77,10 @@ const TOLERANCE = 3;
  * entzerrt, also ein Rechteck. `frame` ist das Kamerabild, in dem es
  * formatfüllend liegen soll.
  */
-export function locate(reference: RgbaImage, frame: RgbaImage): Quad | null {
+export function locate(reference: RgbaImage, frame: RgbaImage, options: LocateOptions = {}): Quad | null {
+  const fills = options.fills ?? FILLS;
+  const minShare = options.minShare ?? 0.1;
+  const maxShare = options.maxShare ?? 2.2;
   const small = downscaleGray(toGray(reference), WORK_SIZE);
   const shot = downscaleGray(toGray(frame), WORK_SIZE);
   if (Math.min(small.image.width, small.image.height) < 40) return null;
@@ -74,7 +90,7 @@ export function locate(reference: RgbaImage, frame: RgbaImage): Quad | null {
   const target = boxBlur(shot.image, 1);
 
   let best: { matrix: number[]; quality: number } | null = null;
-  for (const fill of FILLS) {
+  for (const fill of fills) {
     const found = tryFill(source, target, fill);
     if (found && (!best || found.quality > best.quality)) best = found;
   }
@@ -96,7 +112,7 @@ export function locate(reference: RgbaImage, frame: RgbaImage): Quad | null {
   if (!isPlausibleQuad(quad)) return null;
   // Ein Foto, das im Nahbild winzig oder riesig herauskommt, ist nicht dieses.
   const share = polygonArea(quad) / (frame.width * frame.height);
-  if (share < 0.1 || share > 2.2) return null;
+  if (share < minShare || share > maxShare) return null;
   return quad;
 }
 
