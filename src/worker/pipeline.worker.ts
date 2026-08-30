@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { detectAt, detectPage, detectPhotoQuads, detectPhotosOnPage } from '../lib/imaging/detect';
+import { detectAt, detectCloseup, detectPage, detectPhotoQuads, detectPhotosOnPage } from '../lib/imaging/detect';
 import { refinePhoto } from '../lib/imaging/closeup';
 import { locate } from '../lib/imaging/locate';
 import { mergePhotos } from '../lib/imaging/stack';
@@ -19,6 +19,7 @@ export type WorkerRequest =
   | { id: number; type: 'photos'; page: TransferImage }
   | { id: number; type: 'spot'; page: TransferImage; point: Pt }
   | { id: number; type: 'locate'; reference: TransferImage; frame: TransferImage }
+  | { id: number; type: 'closeup'; frame: TransferImage }
   | {
       id: number;
       type: 'refine';
@@ -36,6 +37,7 @@ export type WorkerResponse =
   | { id: number; type: 'photos'; quads: Quad[] }
   | { id: number; type: 'spot'; quad: Quad | null }
   | { id: number; type: 'locate'; quad: Quad | null }
+  | { id: number; type: 'closeup'; quad: Quad | null }
   | { id: number; type: 'refine'; image: TransferImage }
   | { id: number; type: 'error'; message: string };
 
@@ -95,6 +97,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     if (request.type === 'locate') {
       const quad = locate(toRgba(request.reference), toRgba(request.frame));
       const response: WorkerResponse = { id: request.id, type: 'locate', quad };
+      self.postMessage(response);
+      return;
+    }
+
+    if (request.type === 'closeup') {
+      const quad = detectCloseup(toRgba(request.frame));
+      const response: WorkerResponse = { id: request.id, type: 'closeup', quad };
       self.postMessage(response);
       return;
     }

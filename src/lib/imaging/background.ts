@@ -207,3 +207,103 @@ export function isBackgroundColor(limits: Limits, r: number, g: number, b: numbe
   const reference = luma(limits.color[0], limits.color[1], limits.color[2]);
   return within(r, g, b, limits.color, reference, limits.chroma, limits.brightness);
 }
+
+/** Breite des Randstreifens, als Anteil der kurzen Bildkante. */
+const BORDER_BAND = 0.05;
+
+/**
+ * Die Streuung wird nicht am äussersten Wert festgemacht, sondern an diesem
+ * Anteil: Ein paar Punkte des Streifens gehören schon zum Foto, wenn der Rand
+ * ungleichmässig ausfällt, und die dürfen die Grenze nicht aufziehen.
+ */
+const BORDER_QUANTILE = 0.75;
+
+/** Und ein wenig Luft darüber hinaus, für Schatten am Rand. */
+const BORDER_SLACK = 1.1;
+
+/**
+ * Farbe und Streuung des **Randstreifens** – in einer Nahaufnahme also des
+ * Albumpapiers ringsum.
+ *
+ * `estimateBackground` sucht die grösste gleichmässige Fläche im Bild. In einer
+ * Seitenaufnahme ist das das Papier; in einer Nahaufnahme, in der der Abzug
+ * fast alles füllt, ist es der Abzug selbst – oder sein blasser Himmel. Am
+ * echten Album schlug die Erkennung deshalb in acht von neun Fällen fehl.
+ *
+ * Hier wird die Frage umgedreht: *Wo* der Untergrund liegt, ist bekannt, denn
+ * genau das verlangt die Führung – ein Streifen Papier muss ringsum sichtbar
+ * bleiben. Also wird er dort gemessen, statt ihn zu suchen.
+ *
+ * Die Grenze bleibt bewusst eng. Weit gefasst verschluckt sie den weissen Rand
+ * alter Abzüge – er ist heller als das cremefarbene Papier, aber nicht viel –,
+ * und der Zuschnitt schneidet ihn ab. Gemessen: Mit weiter Grenze lag ein Foto
+ * durchgehend 114 Punkte daneben, mit enger 19.
+ */
+export function borderLimits(img: RgbaImage, band = BORDER_BAND): Limits {
+  const width = Math.max(1, Math.round(Math.min(img.width, img.height) * band));
+  const red = new Uint32Array(256);
+  const green = new Uint32Array(256);
+  const blue = new Uint32Array(256);
+  let count = 0;
+
+  const visit = (p: number) => {
+    red[img.data[p]]++;
+    green[img.data[p + 1]]++;
+    blue[img.data[p + 2]]++;
+    count++;
+  };
+  for (let y = 0; y < img.height; y++) {
+    const outer = y < width || y >= img.height - width;
+    for (let x = 0; x < img.width; x++) {
+      if (!outer && x >= width && x < img.width - width) x = img.width - width - 1;
+      else visit((y * img.width + x) * 4);
+    }
+  }
+
+  const color: [number, number, number] = [
+    quantileOf(red, count, 0.5),
+    quantileOf(green, count, 0.5),
+    quantileOf(blue, count, 0.5),
+  ];
+  const reference = luma(color[0], color[1], color[2]);
+
+  // Zweiter Durchgang: wie weit streut der Streifen um diese Farbe?
+  const chroma = new Uint32Array(256);
+  const brightness = new Uint32Array(101);
+  const measure = (p: number) => {
+    const r = img.data[p];
+    const g = img.data[p + 1];
+    const b = img.data[p + 2];
+    const off = Math.max(
+      Math.abs(r - g - (color[0] - color[1])),
+      Math.abs(g - b - (color[1] - color[2])),
+    );
+    chroma[Math.min(255, off)]++;
+    const share = Math.abs(luma(r, g, b) - reference) / Math.max(1, reference);
+    brightness[Math.min(100, Math.round(share * 100))]++;
+  };
+  for (let y = 0; y < img.height; y++) {
+    const outer = y < width || y >= img.height - width;
+    for (let x = 0; x < img.width; x++) {
+      if (!outer && x >= width && x < img.width - width) x = img.width - width - 1;
+      else measure((y * img.width + x) * 4);
+    }
+  }
+
+  return {
+    color,
+    chroma: clamp(quantileOf(chroma, count, BORDER_QUANTILE) * BORDER_SLACK, 6, 30),
+    brightness: clamp((quantileOf(brightness, count, BORDER_QUANTILE) / 100) * BORDER_SLACK, 0.06, 0.35),
+  };
+}
+
+/** Der Wert, unter dem dieser Anteil der gezählten Punkte liegt. */
+function quantileOf(bins: Uint32Array, total: number, share: number): number {
+  const target = total * share;
+  let seen = 0;
+  for (let v = 0; v < bins.length; v++) {
+    seen += bins[v];
+    if (seen >= target) return v;
+  }
+  return bins.length - 1;
+}

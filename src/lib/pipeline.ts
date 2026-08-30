@@ -1,5 +1,5 @@
 import type { EnhanceOptions } from './imaging/enhance';
-import { detectAt, detectPage, detectPhotoQuads, detectPhotosOnPage } from './imaging/detect';
+import { detectAt, detectCloseup, detectPage, detectPhotoQuads, detectPhotosOnPage } from './imaging/detect';
 import { downscaleRgba } from './imaging/gray';
 import { scaleQuad } from './imaging/geometry';
 import { refinePhoto } from './imaging/closeup';
@@ -179,6 +179,21 @@ export async function locateAsync(reference: RgbaImage, frame: RgbaImage): Promi
     return response.type === 'locate' && response.quad ? scaleQuad(response.quad, small.scale) : null;
   } catch {
     return locate(reference, frame);
+  }
+}
+
+/**
+ * Das Foto in einer Nahaufnahme, gemessen am Papier ringsum – der Rückfall,
+ * wenn die Seitenaufnahme es nicht wiedererkennt.
+ */
+export async function detectCloseupAsync(frame: RgbaImage): Promise<Quad | null> {
+  const small = forAnalysis(frame);
+  const payload = toTransfer(small.image);
+  try {
+    const response = await send({ id: nextId++, type: 'closeup', frame: payload }, [payload.data]);
+    return response.type === 'closeup' && response.quad ? scaleQuad(response.quad, small.scale) : null;
+  } catch {
+    return detectCloseup(frame);
   }
 }
 
