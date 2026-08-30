@@ -1,5 +1,7 @@
 import type { EnhanceOptions } from './imaging/enhance';
-import { detectAt, detectPage, detectPhotoQuads, detectPhotosOnPage } from './imaging/detect';
+import { detectAt, detectCloseup, detectPage, detectPhotoQuads, detectPhotosOnPage } from './imaging/detect';
+import { downscaleRgba } from './imaging/gray';
+import { scaleQuad } from './imaging/geometry';
 import { refinePhoto } from './imaging/closeup';
 import type { Closeup } from './imaging/closeup';
 import { locate } from './imaging/locate';
@@ -8,6 +10,28 @@ import type { Pt, Quad, RgbaImage } from './imaging/types';
 import type { TransferImage, WorkerRequest, WorkerResponse } from '../worker/pipeline.worker';
 
 type Pending = { resolve: (value: WorkerResponse) => void; reject: (error: Error) => void };
+
+/**
+ * So lange wird auf eine Antwort des Workers gewartet, dann gilt er als tot.
+ *
+ * Ohne diese Frist konnte ein Bildschirm für immer stehenbleiben: Stirbt der
+ * Worker still – auf einem Telefon reicht dafür ein zu grosses Bild –, kommt
+ * weder eine Antwort noch ein Fehler, das Versprechen löst sich nie ein, und
+ * die Oberfläche wartet bis zum Neuladen. Genau so blieb „Foto wird gesucht …"
+ * stehen. Lieber langsam auf dem Hauptthread weiterrechnen als gar nicht.
+ */
+const DEADLINE = 12_000;
+
+/**
+ * Grösse, auf die ein Bild vor der Analyse gebracht wird.
+ *
+ * Die Erkennung rechnet innen ohnehin auf 720 Punkten, das Wiederfinden auf
+ * 260. Eine Aufnahme in voller Grösse hinüberzuschicken bringt davon nichts –
+ * kostet aber je Kopie über dreissig Megabyte, und `takeShot` machte davon vier
+ * hintereinander. Was Bildpunkte *erzeugt* (`merge`, `refine`), geht weiterhin
+ * in voller Grösse.
+ */
+const ANALYSIS_MAX = 1200;
 
 let worker: Worker | null = null;
 let nextId = 1;
@@ -25,10 +49,7 @@ function getWorker(): Worker | null {
       if (event.data.type === 'error') entry.reject(new Error(event.data.message));
       else entry.resolve(event.data);
     };
-    worker.onerror = () => {
-      for (const entry of pending.values()) entry.reject(new Error('Bildverarbeitung fehlgeschlagen'));
-      pending.clear();
-    };
+    worker.onerror = () => dropWorker(new Error('Bildverarbeitung fehlgeschlagen'));
   } catch {
     worker = null;
   }
@@ -38,10 +59,50 @@ function getWorker(): Worker | null {
 function send(request: WorkerRequest, transfer: Transferable[]): Promise<WorkerResponse> {
   const instance = getWorker();
   if (!instance) return Promise.reject(new Error('Kein Worker verfügbar'));
+
   return new Promise((resolve, reject) => {
-    pending.set(request.id, { resolve, reject });
-    instance.postMessage(request, transfer);
+    const timer = setTimeout(() => {
+      pending.delete(request.id);
+      // Ein Worker, der nicht mehr antwortet, antwortet auch beim nächsten Mal
+      // nicht. Er wird weggeworfen; der nächste Auftrag legt einen frischen an.
+      dropWorker(new Error('Bildverarbeitung antwortet nicht'));
+      reject(new Error('Bildverarbeitung antwortet nicht'));
+    }, DEADLINE);
+
+    pending.set(request.id, {
+      resolve: (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
+
+    try {
+      instance.postMessage(request, transfer);
+    } catch (error) {
+      // Auch das muss auflösen: Wirft `postMessage`, bliebe der Eintrag sonst
+      // ewig in der Warteschlange stehen.
+      clearTimeout(timer);
+      pending.delete(request.id);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
   });
+}
+
+/** Den Worker aufgeben und alles Wartende absagen. */
+function dropWorker(reason: Error): void {
+  for (const entry of pending.values()) entry.reject(reason);
+  pending.clear();
+  worker?.terminate();
+  worker = null;
+}
+
+/** Verkleinerte Fassung für die Analyse, samt Faktor zurück in das Original. */
+function forAnalysis(img: RgbaImage): { image: RgbaImage; scale: number } {
+  return downscaleRgba(img, ANALYSIS_MAX);
 }
 
 function toTransfer(img: RgbaImage): TransferImage {
@@ -55,10 +116,11 @@ function fromTransfer(image: TransferImage): RgbaImage {
 
 /** Fotoerkennung – im Worker, mit Rückfall auf den Hauptthread. */
 export async function detect(image: RgbaImage, analysisSize?: number): Promise<Quad[]> {
-  const payload = toTransfer(image);
+  const small = forAnalysis(image);
+  const payload = toTransfer(small.image);
   try {
     const response = await send({ id: nextId++, type: 'detect', image: payload, analysisSize }, [payload.data]);
-    return response.type === 'detect' ? response.quads : [];
+    return response.type === 'detect' ? response.quads.map((quad) => scaleQuad(quad, small.scale)) : [];
   } catch {
     return detectPhotoQuads(image, { analysisSize });
   }
@@ -69,10 +131,11 @@ export async function detect(image: RgbaImage, analysisSize?: number): Promise<Q
  * Hauptthread. Das läuft in der Vorschau mehrmals je Sekunde.
  */
 export async function detectPageAsync(image: RgbaImage, analysisSize?: number): Promise<Quad | null> {
-  const payload = toTransfer(image);
+  const small = forAnalysis(image);
+  const payload = toTransfer(small.image);
   try {
     const response = await send({ id: nextId++, type: 'page', image: payload, analysisSize }, [payload.data]);
-    return response.type === 'page' ? response.page : null;
+    return response.type === 'page' && response.page ? scaleQuad(response.page, small.scale) : null;
   } catch {
     return detectPage(image, { analysisSize });
   }
@@ -80,10 +143,11 @@ export async function detectPageAsync(image: RgbaImage, analysisSize?: number): 
 
 /** Die Fotos auf einer bereits entzerrten Seite. */
 export async function detectPhotosAsync(page: RgbaImage): Promise<Quad[]> {
-  const payload = toTransfer(page);
+  const small = forAnalysis(page);
+  const payload = toTransfer(small.image);
   try {
     const response = await send({ id: nextId++, type: 'photos', page: payload }, [payload.data]);
-    return response.type === 'photos' ? response.quads : [];
+    return response.type === 'photos' ? response.quads.map((quad) => scaleQuad(quad, small.scale)) : [];
   } catch {
     return detectPhotosOnPage(page);
   }
@@ -91,10 +155,12 @@ export async function detectPhotosAsync(page: RgbaImage): Promise<Quad[]> {
 
 /** Das Foto an einer angetippten Stelle. */
 export async function detectAtAsync(page: RgbaImage, point: Pt): Promise<Quad | null> {
-  const payload = toTransfer(page);
+  const small = forAnalysis(page);
+  const payload = toTransfer(small.image);
+  const spot = { x: point.x / small.scale, y: point.y / small.scale };
   try {
-    const response = await send({ id: nextId++, type: 'spot', page: payload, point }, [payload.data]);
-    return response.type === 'spot' ? response.quad : null;
+    const response = await send({ id: nextId++, type: 'spot', page: payload, point: spot }, [payload.data]);
+    return response.type === 'spot' && response.quad ? scaleQuad(response.quad, small.scale) : null;
   } catch {
     return detectAt(page, point);
   }
@@ -102,16 +168,32 @@ export async function detectAtAsync(page: RgbaImage, point: Pt): Promise<Quad | 
 
 /** Das Foto der Seitenaufnahme im Nahbild wiederfinden. */
 export async function locateAsync(reference: RgbaImage, frame: RgbaImage): Promise<Quad | null> {
-  const first = toTransfer(reference);
-  const second = toTransfer(frame);
+  const small = forAnalysis(frame);
+  const first = toTransfer(forAnalysis(reference).image);
+  const second = toTransfer(small.image);
   try {
     const response = await send({ id: nextId++, type: 'locate', reference: first, frame: second }, [
       first.data,
       second.data,
     ]);
-    return response.type === 'locate' ? response.quad : null;
+    return response.type === 'locate' && response.quad ? scaleQuad(response.quad, small.scale) : null;
   } catch {
     return locate(reference, frame);
+  }
+}
+
+/**
+ * Das Foto in einer Nahaufnahme, gemessen am Papier ringsum – der Rückfall,
+ * wenn die Seitenaufnahme es nicht wiedererkennt.
+ */
+export async function detectCloseupAsync(frame: RgbaImage): Promise<Quad | null> {
+  const small = forAnalysis(frame);
+  const payload = toTransfer(small.image);
+  try {
+    const response = await send({ id: nextId++, type: 'closeup', frame: payload }, [payload.data]);
+    return response.type === 'closeup' && response.quad ? scaleQuad(response.quad, small.scale) : null;
+  } catch {
+    return detectCloseup(frame);
   }
 }
 

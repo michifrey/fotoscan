@@ -61,7 +61,7 @@ export function refinePhoto(
 ): RgbaImage {
   if (!closeup) return rotate(enhance(reference, options), rotation);
 
-  const size = outputSize(closeup.quad, maxDim);
+  const size = outputSize(closeup.quad, maxDim, closeup.image);
   const detail = warpPerspective(closeup.image, closeup.quad, size.width, size.height);
   // Zu klein geraten: Wer nicht näher herangeht als bei der Seitenaufnahme,
   // gewinnt nichts – dann bleibt es bei der Seitenaufnahme.

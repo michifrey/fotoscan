@@ -87,3 +87,47 @@ test('ein übersehenes Foto mit einem Tipp aufnehmen', async ({ page }) => {
   await page.getByRole('button', { name: 'Zurück' }).click();
   await expect(page.getByText('4 Fotos')).toBeVisible();
 });
+
+test('die Ecken der Seite antippen', async ({ page }) => {
+  // Seidenpapier, Albumseite und lose Blätter darunter sind dasselbe Papier –
+  // die Erkennung kann sie nicht auseinanderhalten. Dann setzt sie der Nutzer
+  // eben selbst: vier Tipps, und das Viereck steht.
+  await page.goto('/');
+  await page.getByTestId('album-name').fill('Ecken setzen');
+  await page.getByTestId('create-album').click();
+  await page.getByTestId('scan').click();
+  await page.getByTestId('import-input').setInputFiles(FIXTURE);
+  await expect(page.getByRole('heading', { name: 'Seite prüfen' })).toBeVisible({ timeout: 30_000 });
+
+  // Alle vier Ecken müssen greifbar sein – eine ausserhalb des Bildes wäre es
+  // nicht, und genau das ist am echten Album passiert.
+  for (const ecke of ['oben links', 'oben rechts', 'unten rechts', 'unten links']) {
+    await expect(page.getByRole('button', { name: `Ecke ${ecke}` })).toBeVisible();
+  }
+
+  await page.getByTestId('ecken-setzen').click();
+  await expect(page.getByTestId('seite-hinweis')).toHaveText(/oben links.*1 von 4/);
+  // Solange gesetzt wird, geht es nicht weiter.
+  await expect(page.getByTestId('seite-weiter')).toBeDisabled();
+
+  const flaeche = page.getByTestId('ecken-tippen');
+  const box = (await flaeche.boundingBox())!;
+  const ecken = [
+    [0.1, 0.09],
+    [0.9, 0.09],
+    [0.9, 0.91],
+    [0.1, 0.91],
+  ];
+  for (const [x, y] of ecken) {
+    await flaeche.click({ position: { x: box.width * x, y: box.height * y } });
+  }
+
+  // Danach steht das Viereck, und es geht weiter.
+  await expect(page.getByTestId('seite-hinweis')).toHaveText(/Ecken ziehen/);
+  await expect(page.getByTestId('seite-weiter')).toBeEnabled();
+
+  await page.getByTestId('seite-weiter').click();
+  await expect(page.getByRole('heading', { name: 'Fotos wählen' })).toBeVisible();
+  await expect(page.getByTestId('fotos-hinweis')).not.toHaveText(/werden gesucht/, { timeout: 30_000 });
+  await expect(gewaehlt(page)).toHaveText('3 Fotos einzeln scannen');
+});

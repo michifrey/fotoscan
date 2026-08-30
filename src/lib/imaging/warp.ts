@@ -1,3 +1,4 @@
+import { snapToPrint, trueAspect } from './aspect';
 import { dist } from './geometry';
 import type { GrayImage, Pt, Quad, RgbaImage } from './types';
 import { createRgba } from './types';
@@ -44,12 +45,39 @@ export function computeHomography(src: Quad, dst: Quad): number[] {
 }
 
 /**
- * Ausgabegrösse für ein Viereck: die längere der jeweils gegenüberliegenden
- * Seiten, damit beim Entzerren keine Details verloren gehen.
+ * Ausgabegrösse für ein Viereck.
+ *
+ * Die **Fläche** kommt von der längeren der jeweils gegenüberliegenden Seiten,
+ * damit beim Entzerren keine Bildpunkte verloren gehen. Das **Verhältnis** von
+ * Breite zu Höhe stammt dagegen aus `trueAspect`, sobald die Grösse der
+ * Aufnahme mitgegeben wird: Unter Perspektive ist die nahe Kante länger als die
+ * ferne, und keine der beiden ist die wahre. Über Neigungen bis 40° liegt die
+ * Kantenmethode im Mittel zehn Prozent daneben, im Einzelfall mehr.
+ *
+ * Übernommen wird die Rückrechnung allerdings nur, wenn sie den Prüfstand in
+ * `plausible` besteht – an echten, ein paar Punkte verrutschten Ecken ist sie
+ * nicht von selbst vertrauenswürdig. Sonst, und ohne `frame`, bleibt es bei den
+ * Kanten; bei der frontalen Aufnahme sind die ohnehin exakt.
  */
-export function outputSize(quad: Quad, maxDim = 3600): { width: number; height: number } {
-  const width = Math.max(dist(quad[0], quad[1]), dist(quad[3], quad[2]));
-  const height = Math.max(dist(quad[0], quad[3]), dist(quad[1], quad[2]));
+export function outputSize(
+  quad: Quad,
+  maxDim = 3600,
+  frame?: { width: number; height: number },
+): { width: number; height: number } {
+  const along = Math.max(dist(quad[0], quad[1]), dist(quad[3], quad[2]));
+  const across = Math.max(dist(quad[0], quad[3]), dist(quad[1], quad[2]));
+  const ratio = plausible(frame ? trueAspect(quad, frame.width, frame.height) : null, along / across);
+
+  // Die Fläche bleibt, wie die Kanten sie vorgeben; nur ihre Aufteilung wird
+  // korrigiert. So verliert die Entzerrung keine Auflösung, egal in welche
+  // Richtung das Verhältnis wandert.
+  const [width, height] = ratio
+    ? (() => {
+        const area = along * across;
+        const h = Math.sqrt(area / ratio);
+        return [h * ratio, h];
+      })()
+    : [along, across];
   let w = Math.max(16, Math.round(width));
   let h = Math.max(16, Math.round(height));
   const longest = Math.max(w, h);
@@ -59,6 +87,40 @@ export function outputSize(quad: Quad, maxDim = 3600): { width: number; height: 
     h = Math.round(h * f);
   }
   return { width: w, height: h };
+}
+
+/**
+ * Was von der zurückgerechneten Schätzung übrig bleibt, wenn man ihr nicht
+ * blind glaubt.
+ *
+ * Die Rechnung ist auf dem Papier exakt – an einer gerechneten Kamera trifft
+ * sie auf ein Hundertstel Prozent. An echten Ecken ist sie das nicht: Die
+ * Fluchtpunkte liegen weit ausserhalb des Bildes, und ein paar Punkte Versatz
+ * an einer Ecke verschieben sie um ein Vielfaches. Gemessen, bei zwei Punkten
+ * Rauschen: nur noch 72 % brauchbar, 1,7 % grob falsch; bei vier Punkten 48 %
+ * und 4,4 %. An einer echten Albumseite kam für einen Abzug **2,8:1** heraus –
+ * ein Format, das es nicht gibt.
+ *
+ * Deshalb zwei Bedingungen. Erstens muss die Schätzung nah an einem
+ * **Abzugsformat** liegen; damit wird aus einer verrauschten Zahl eine
+ * Entscheidung zwischen wenigen bekannten Werten. Zweitens darf sie nicht
+ * weiter als ein Viertel von dem abweichen, was die Kanten sagen – sonst ist
+ * nicht die Kantenmethode schief, sondern die Rechnung entgleist.
+ *
+ * Gemessen über echte Formate, die **nicht** in der Liste stehen (9×13 gegen
+ * eine Liste ohne 9×13), bei Neigungen bis 40°:
+ *
+ * | Ecken-Rauschen | besser | schlechter | mittlerer Fehler |
+ * | --- | --- | --- | --- |
+ * | 1 Punkt | 85 % | 5 % | 10,4 % → 3,1 % |
+ * | 3 Punkte | 65 % | 12 % | 10,3 % → 5,7 % |
+ * | 6 Punkte | 44 % | 16 % | 10,3 % → 7,6 % |
+ */
+function plausible(estimate: number | null, byEdges: number): number | null {
+  if (estimate === null) return null;
+  const snapped = snapToPrint(estimate);
+  if (snapped === null) return null;
+  return Math.abs(snapped - byEdges) / byEdges < 0.25 ? snapped : null;
 }
 
 /**

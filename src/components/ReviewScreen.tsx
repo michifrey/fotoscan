@@ -4,7 +4,7 @@ import { enhance } from '../lib/imaging/enhance';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
 import { applyHomography, computeHomography, outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
 import { cropWriting, findWriting } from '../lib/imaging/writing';
-import { scaleQuad } from '../lib/imaging/geometry';
+import { orderQuad, scaleQuad } from '../lib/imaging/geometry';
 import type { Pt, Quad, RgbaImage } from '../lib/imaging/types';
 import { hasGlare } from '../lib/imaging/glare';
 import { defaultQuad } from '../lib/imaging/detect';
@@ -68,7 +68,14 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   const frame = shot.frames[0];
 
   const [step, setStep] = useState<Step>('seite');
-  const [pageQuad, setPageQuad] = useState<Quad>(() => shot.page ?? fullQuad(frame.width, frame.height));
+  const [pageQuad, setPageQuad] = useState<Quad>(() =>
+    // Ins Bild geholt: Eine Ecke ausserhalb lässt sich nicht greifen, und die
+    // Erkennung weitet ihr Viereck bewusst ein wenig – am Bildrand landet es
+    // dann daneben.
+    insideImage(shot.page ?? fullQuad(frame.width, frame.height), frame.width, frame.height),
+  );
+  /** Welche Ecke als nächste angetippt wird, oder `null`: gerade keine. */
+  const [awaiting, setAwaiting] = useState<number | null>(null);
   const [quads, setQuads] = useState<Quad[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
@@ -115,6 +122,11 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
    */
   const page = useMemo<RgbaImage | null>(() => {
     if (step !== 'fotos') return null;
+    // Bewusst ohne die Aufnahme: Die Rückrechnung des Seitenverhältnisses
+    // stützt sich darauf, dass ein Abzug in einem Normformat vorliegt. Eine
+    // Albumseite tut das nicht – sie ist so gross, wie der Buchbinder wollte.
+    // Und es schadet auch nichts: Diese Entzerrung ist eine Zwischenstufe, die
+    // fertigen Fotos entstehen später aus der Aufnahme selbst.
     const size = outputSize(pageQuad, PAGE_MAX);
     return warpPerspective(frame, pageQuad, size.width, size.height);
   }, [frame, pageQuad, step]);
@@ -246,6 +258,30 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       });
     },
     [page],
+  );
+
+  /**
+   * Eine Ecke der Seite setzen.
+   *
+   * Seidenpapier, Albumseite und die losen Blätter darunter sind dasselbe
+   * Papier, sie berühren einander und liegen in einer Ebene – über Farbe,
+   * Kanten oder die Fotos darauf lassen sie sich nicht zuverlässig trennen
+   * (alle drei Wege gemessen, keiner trägt). Ein Mensch weiss es aus dem
+   * Zusammenhang. Also fragt die App ihn: vier Tipps, und das Viereck steht.
+   *
+   * Zum Schluss werden die vier Punkte sortiert. Wer nicht in der verlangten
+   * Reihenfolge tippt, bekommt trotzdem ein brauchbares Viereck statt einer
+   * verdrehten Schleife.
+   */
+  const setCorner = useCallback(
+    (point: Pt) => {
+      setPageQuad((current) => {
+        const next = current.map((p, i) => (i === awaiting ? point : p)) as Quad;
+        return awaiting === CORNERS.length - 1 ? orderQuad(next) : next;
+      });
+      setAwaiting((current) => (current === null || current >= CORNERS.length - 1 ? null : current + 1));
+    },
+    [awaiting],
   );
 
   /** Ein Foto ganz entfernen – nicht bloss abwählen. */
@@ -395,7 +431,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
           }
         />
 
-        <div className="flex-1 overflow-y-auto pb-32">
+        <div className="flex-1 overflow-y-auto pb-36">
           <div className="relative mx-auto w-full max-w-2xl" style={{ aspectRatio: frame.width / frame.height }}>
             {sourceUrl && <img src={sourceUrl} alt="Aufnahme" className="size-full object-contain" />}
             <QuadEditor
@@ -403,19 +439,21 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
               height={frame.height}
               quads={[pageQuad]}
               selected={[0]}
-              editing={0}
-              onChange={(_, quad) => setPageQuad(quad)}
+              editing={awaiting === null ? 0 : null}
+              onChange={(_, quad) => setPageQuad(insideImage(quad, frame.width, frame.height))}
+              onTap={awaiting === null ? undefined : (point) => setCorner(point)}
+              awaiting={awaiting ?? undefined}
             />
           </div>
 
-          <p className="mx-auto max-w-2xl px-4 pt-4 text-xs leading-relaxed text-stone-400">
-            Das Viereck umfasst die Albumseite. Stimmt es nicht, die Ecken ziehen – lieber
-            etwas zu weit als zu knapp, angeschnitten kommt nichts zurück. Danach wird die
-            Seite geradegerückt und darauf nach Fotos gesucht.
+          <p className="mx-auto max-w-2xl px-4 pt-4 text-xs leading-relaxed text-stone-400" data-testid="seite-hinweis">
+            {awaiting === null
+              ? 'Das Viereck umfasst die Albumseite. Stimmt es nicht, die Ecken ziehen – oder unten die vier Ecken der Reihe nach antippen. Lieber etwas zu weit als zu knapp, angeschnitten kommt nichts zurück.'
+              : `Ecke ${CORNERS[awaiting]} antippen (${awaiting + 1} von 4).`}
           </p>
         </div>
 
-        <div className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-stone-950/95 px-4 pt-3 pb-6 backdrop-blur">
+        <div className="fixed inset-x-0 bottom-0 space-y-2 border-t border-white/10 bg-stone-950/95 px-4 pt-3 pb-6 backdrop-blur">
           <div className="mx-auto flex max-w-2xl gap-3">
             <Button onClick={onCancel} className="flex-1">
               Verwerfen
@@ -423,10 +461,20 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
             <Button
               variant="primary"
               onClick={() => setStep('fotos')}
+              disabled={awaiting !== null}
               className="flex-[2]"
               data-testid="seite-weiter"
             >
               Seite geraderücken
+            </Button>
+          </div>
+          <div className="mx-auto max-w-2xl">
+            <Button
+              onClick={() => setAwaiting(awaiting === null ? 0 : null)}
+              className="w-full py-1.5 text-xs"
+              data-testid="ecken-setzen"
+            >
+              {awaiting === null ? 'Ecken der Seite antippen' : 'Abbrechen'}
             </Button>
           </div>
         </div>
@@ -580,6 +628,17 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       </div>
     </div>
   );
+}
+
+/** Die Ecken, in der Reihenfolge, in der sie angetippt werden. */
+const CORNERS = ['oben links', 'oben rechts', 'unten rechts', 'unten links'];
+
+/** Jede Ecke ins Bild holen – ausserhalb ist sie nicht zu greifen. */
+function insideImage(quad: Quad, width: number, height: number): Quad {
+  return quad.map((p) => ({
+    x: Math.max(0, Math.min(width - 1, p.x)),
+    y: Math.max(0, Math.min(height - 1, p.y)),
+  })) as Quad;
 }
 
 /** Das ganze Bild als Viereck. */

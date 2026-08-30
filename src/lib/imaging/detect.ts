@@ -1,5 +1,5 @@
 import { boxBlur, downscaleRgba, toGray } from './gray';
-import { estimateBackground, foregroundMask, isBackgroundColor } from './background';
+import { borderLimits, estimateBackground, foregroundMask, isBackgroundColor } from './background';
 import type { Background, Limits } from './background';
 import {
   close,
@@ -96,6 +96,24 @@ const PAGE_MARGIN = 0.02;
 const PAPER_FILTER_MIN = 0.25;
 
 /** Grenzen für ein angetipptes Foto, als Anteil der Seitenfläche. */
+/** Radius, mit dem die Maske einer Nahaufnahme geöffnet wird. */
+const CLOSEUP_OPEN = 0.006;
+
+/**
+ * So viel des Nahbildes muss der Abzug mindestens ausmachen.
+ *
+ * Bewusst hoch. Ragt der Abzug über den Bildrand hinaus, misst der Randstreifen
+ * nicht mehr das Papier, sondern das Motiv selbst – und dann kommt irgendeine
+ * Fläche *im* Foto heraus. Gemessen: ein Zwanzigstel-Ausschnitt mitten im
+ * Motiv. Ein Zuschnitt, der nur ein Fünftel des Bildes umfasst, ist in einer
+ * Nahaufnahme keine Antwort, sondern ein Missverständnis; dann lieber `null`
+ * und der ganze Ausschnitt.
+ */
+const CLOSEUP_AREA_MIN = 0.35;
+
+/** Und so viel seines eigenen Vierecks muss er ausfüllen. */
+const CLOSEUP_FILL_MIN = 0.55;
+
 const TAP_AREA_MIN = 0.004;
 const TAP_AREA_MAX = 0.9;
 
@@ -197,8 +215,21 @@ export function detectPage(img: RgbaImage, options: DetectOptions = {}): Quad | 
   // Näherung auf vier Ecken schneidet an einer Rundung schon einmal etwas ab,
   // und was hier fehlt, fehlt einem Foto am Seitenrand. Ein wenig Umgebung im
   // entzerrten Bild stört dagegen niemanden.
+  //
+  // Ins Bild geholt wird sie trotzdem: Jenseits des Randes steht nichts, was
+  // sich entzerren liesse – und in der Oberfläche wäre eine Ecke ausserhalb
+  // nicht zu greifen. Wer die Seite formatfüllend aufnimmt, bekäme sonst ein
+  // Viereck, an dem er nichts mehr richten kann.
   const margin = Math.min(small.width, small.height) * PAGE_MARGIN;
-  return scaleQuad(insetQuad(best, -margin), scale);
+  return clampToImage(scaleQuad(insetQuad(best, -margin), scale), img.width, img.height);
+}
+
+/** Jede Ecke ins Bild holen. */
+function clampToImage(quad: Quad, width: number, height: number): Quad {
+  return quad.map((p) => ({
+    x: Math.max(0, Math.min(width - 1, p.x)),
+    y: Math.max(0, Math.min(height - 1, p.y)),
+  })) as Quad;
 }
 
 /**
@@ -353,6 +384,53 @@ export function detectAt(page: RgbaImage, point: Pt, options: DetectOptions = {}
   if (polygonArea(quad) > small.width * small.height * TAP_AREA_MAX) return null;
   if (polygonArea(quad) < small.width * small.height * TAP_AREA_MIN) return null;
   return scaleQuad(quad, scale);
+}
+
+/**
+ * Das Foto in einer **Nahaufnahme**, gemessen am Papier ringsum.
+ *
+ * Die dritte Stufe fragt etwas anderes als die ersten beiden. Dort liegen
+ * Fotos auf einer grossen gleichmässigen Fläche, und `estimateBackground`
+ * findet sie, weil sie die Mehrheit hat. In einer Nahaufnahme ist die Mehrheit
+ * der Abzug selbst; die grösste gleichmässige Fläche ist dann sein blasser
+ * Himmel oder seine ausgebleichte Ecke, und alles Weitere baut auf einer
+ * falschen Annahme auf.
+ *
+ * Am echten Album gemessen, an drei Fotos und drei Randbreiten: Die bisherige
+ * Kantensuche fand in **einem von neun** Fällen etwas Brauchbares. Über den
+ * Randstreifen sind es **neun von neun**, mit 19 bis 38 Punkten Abweichung bei
+ * der empfohlenen Bildfüllung – auf einem Bild von 1500 Punkten Kantenlänge.
+ *
+ * Gibt `null` zurück, wenn sich nichts findet, das sich vom Rand abhebt.
+ */
+export function detectCloseup(frame: RgbaImage, options: DetectOptions = {}): Quad | null {
+  const opts = resolve(options);
+  const { image: small, scale } = downscaleRgba(frame, opts.analysisSize);
+  if (small.width < 48 || small.height < 48) return null;
+
+  const limits = borderLimits(small);
+  // Klein geöffnet: Hier steht keine Bildunterschrift neben dem Abzug, die weg
+  // müsste – es geht nur darum, die Körnung des Papiers nicht mitzuzählen.
+  const radius = Math.max(2, Math.round(Math.min(small.width, small.height) * CLOSEUP_OPEN));
+  const raw = fillHoles(foregroundMask(small, limits), HOLE_MAX);
+  const mask = open(raw, radius);
+
+  const { labels, components } = connectedComponents(mask);
+  const total = mask.width * mask.height;
+  let best: Quad | null = null;
+  for (const comp of components) {
+    if (comp.area < total * CLOSEUP_AREA_MIN) continue;
+    const quad = approximateQuad(convexHull(componentBoundary(labels, mask.width, mask.height, comp)));
+    if (!quad) continue;
+    // Lockerer als auf der Seite: Ein Abzug mit einer hellen Ecke, die in der
+    // Farbe des Papiers liegt, kommt als U-Form heraus. Auf der Seite wäre das
+    // ein Schatten und würde verworfen; hier steht ausser Frage, dass ein Foto
+    // vor der Kamera liegt – nur seine Ränder sind zu finden.
+    if (comp.area < polygonArea(quad) * CLOSEUP_FILL_MIN) continue;
+    if (!isPlausibleQuad(quad)) continue;
+    if (!best || polygonArea(quad) > polygonArea(best)) best = quad;
+  }
+  return best ? scaleQuad(insetQuad(best, 2), scale) : null;
 }
 
 /** Die zusammenhängende Fläche der Maske, die diesen Punkt enthält. */

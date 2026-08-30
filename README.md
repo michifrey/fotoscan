@@ -27,7 +27,16 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
 - **Perspektive korrigieren.** Schräg aufgenommene Bilder werden auf ein
   Rechteck entzerrt, inklusive Drehung. Die Seite wird dafür bewusst etwas zu
   weit gefasst: Ein Streifen Tisch am Rand stört niemanden, eine abgeschnittene
-  Ecke bekommt niemand zurück.
+  Ecke bekommt niemand zurück. Über den Bildrand hinaus geht es allerdings
+  nicht – dort steht nichts zu entzerren, und eine Ecke ausserhalb liesse sich
+  nicht mehr greifen.
+- **Wo die Maschine nicht weiterkommt, fragt sie.** Auf einer echten Albumseite
+  sind das Seidenpapier darüber, die Seite selbst und die losen Blätter darunter
+  *dasselbe cremefarbene Papier*, sie berühren einander und liegen in einer
+  Ebene. Über Farbe, innere Kanten oder die Fotos darauf lassen sie sich nicht
+  zuverlässig trennen – alle drei Wege wurden an echten Aufnahmen gemessen,
+  keiner trägt. Ein Mensch weiss es aus dem Zusammenhang. Deshalb lassen sich
+  die vier Ecken der Seite antippen: vier Tipps, und das Viereck steht.
 - **Entspiegeln über vier Punkte.** Nach dem Auslösen erscheinen vier Punkte –
   nicht auf dem Bildschirm, sondern auf dem Album selbst: Sie liegen dort, wo
   die App das Motiv sieht, und wandern mit ihm mit. Das Telefon wird
@@ -100,14 +109,18 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
    Album aus dem Blick geraten; dann wird nichts aufgenommen, bis es wieder da
    ist. **Fertig** bricht früher ab und rechnet mit dem, was da ist.
 4. **Seite prüfen:** Das Viereck umfasst die Albumseite. Stimmt es nicht, die
-   Ecken ziehen – lieber etwas zu weit als zu knapp. **Seite geraderücken.**
+   Ecken ziehen – oder **die vier Ecken der Reihe nach antippen**, was am
+   schnellsten geht, wenn der Vorschlag weit danebenliegt. Lieber etwas zu weit
+   als zu knapp. **Seite geraderücken.**
 5. **Fotos wählen:** Auf der geraden Seite stehen die gefundenen Fotos,
    durchnummeriert. Ecken nachziehen, Falsches über das Häkchen abwählen oder
    entfernen, Übersehenes antippen. Drehen und Aufhellen sind hier ebenfalls
    eingestellt.
 6. **Fotos einzeln scannen:** Die App geht die gewählten Fotos der Reihe nach
-   durch; jedes wird formatfüllend aufgenommen, einzeln überspringbar. Danach
-   wird gespeichert. Wer es eilig hat, nimmt darunter **Ohne Nahaufnahmen
+   durch. Jedes so gross wie möglich ins Bild nehmen – aber **ganz**: Ein
+   schmaler Streifen Albumpapier muss ringsum sichtbar bleiben, sonst weiss die
+   App nicht, wo das Foto aufhört. Einzeln überspringbar. Danach wird
+   gespeichert; wer es eilig hat, nimmt darunter **Ohne Nahaufnahmen
    speichern**.
 7. Im Album: tippen zum Ansehen, **Ordnen** zum Umsortieren, **Beschriften**
    für Titel, Datum und Notiz, das Suchfeld zum Wiederfinden.
@@ -339,6 +352,14 @@ einbinden.
   nebeneinander, die Zeile zwischen zwei Fotos, eine Seite ganz ohne
   Handschrift, eine Zeile weitab von jedem Foto – und ein Ausschnitt, der die
   Nachbarfotos draussen lässt.
+- Für den Weg zum Worker: dass ein Auftrag eine **Frist** hat. Bleibt der
+  Worker stumm – auf einem Telefon reicht dafür ein zu grosses Bild –, kommt
+  weder Antwort noch Fehler; ohne Frist wartet die Oberfläche bis zum Neuladen,
+  und genau so blieb am echten Album „Foto wird gesucht …" stehen. Dazu, dass
+  zur Analyse nur ein verkleinertes Bild hinübergeht (die Rechnungen arbeiten
+  innen auf 720 und 260 Punkten; eine volle Aufnahme sind über dreissig
+  Megabyte je Kopie) und dass die Antwort wieder in die Koordinaten der vollen
+  Aufnahme zurückgerechnet wird.
 - Für die Sicherung: die Prüfsumme gegen `git hash-object`, der Weg vom Album
   in Dateien und zurück, das Anlegen des Zweigs im leeren Repository, und dass
   ein zweites Sichern nur die geänderte Datei hochlädt – geprüft an einem
@@ -351,7 +372,9 @@ einbinden.
   antwortet. Dazu die Runde der Nahaufnahmen: der Reihe nach durchgehen,
   überspringen, abbrechen. Und den zweistufigen Weg: Seite bestätigen, drei
   Fotos auf der geraden Seite, eines abwählen, ein übersehenes antippen – es
-  erscheint als vierte Nummer und lässt sich sofort an den Ecken ziehen. Und das
+  erscheint als vierte Nummer und lässt sich sofort an den Ecken ziehen. Dazu
+  das Setzen der Seitenecken: alle vier Griffe greifbar, die vier Ecken der
+  Reihe nach antippen, und danach stehen dieselben drei Fotos. Und das
   Album: beschriften, suchen, umsortieren per
   Ziehen, die Seitenansicht, die Handschrift beim Foto, das Fotobuch
   herunterladen und die Erweiterung der alten Datenbank. Dazu die ganze Runde

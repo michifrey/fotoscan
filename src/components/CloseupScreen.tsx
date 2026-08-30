@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCamera } from '../lib/camera';
 import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { blobFromImageData } from '../lib/canvas';
-import { detect, locateAsync } from '../lib/pipeline';
+import { detectCloseupAsync, locateAsync } from '../lib/pipeline';
 import { exposureOf, tooDark } from '../lib/imaging/exposure';
 import { framingText } from '../lib/framing';
 import { useAutoLight } from '../lib/light';
@@ -33,6 +33,19 @@ export interface CloseupTarget {
    * Viereck dafür zu halten.
    */
   reference: RgbaImage;
+}
+
+/**
+ * Eine gemachte Aufnahme, deren Zuschnitt noch bestätigt werden will – der
+ * Fall, in dem die Seitenaufnahme ihr Foto nicht wiedererkannt hat.
+ */
+interface Pending {
+  index: number;
+  blob: Blob;
+  url: string;
+  width: number;
+  height: number;
+  quad: Quad;
 }
 
 interface Props {
@@ -66,15 +79,18 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
   const [shots, setShots] = useState<Map<number, CloseupShot>>(() => new Map(existing));
   const [quads, setQuads] = useState<Quad[]>([]);
   const [status, setStatus] = useState<string | null>(null);
-  const [hint, setHint] = useState<string | null>(null);
   const [auto, setAuto] = useState(true);
   const [aspect, setAspect] = useState(3 / 4);
+  /** Eine gemachte Aufnahme, deren Zuschnitt noch bestätigt werden will. */
+  const [pending, setPending] = useState<Pending | null>(null);
 
   const busy = useRef(false);
   const capturing = useRef(false);
   const stableCount = useRef(0);
   const previewSize = useRef({ width: 4, height: 3 });
   const chosen = useRef(false);
+  const pendingRef = useRef(false);
+  pendingRef.current = pending !== null;
   const fellBack = useRef(false);
   const autoRef = useRef(auto);
   autoRef.current = auto && !settingsOpen;
@@ -86,6 +102,8 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
   const [dark, setDark] = useState(false);
 
   const target = targets[position];
+  const targetRef = useRef(target);
+  targetRef.current = target;
 
   useEffect(() => {
     if (chosen.current || deviceId !== null || camera.cameras.length === 0) return;
@@ -106,47 +124,113 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
     setPosition((current) => current + 1);
   }, []);
 
+  /** Die Aufnahme behalten und zum nächsten Foto. */
+  const keep = useCallback(
+    (index: number, shot: CloseupShot) => {
+      setShots((current) => {
+        const next = new Map(current);
+        next.set(index, shot);
+        return next;
+      });
+      advance();
+    },
+    [advance],
+  );
+
+  /**
+   * Die Nachfrage schliessen – mit oder ohne die Aufnahme.
+   *
+   * Aufgeräumt wird hier und nicht in einem Zustands-Aktualisierer: Der läuft
+   * unter `StrictMode` zweimal, und zweimal weiterschalten hiesse, ein Foto zu
+   * überspringen.
+   */
+  const closePending = useCallback(
+    (take: boolean) => {
+      if (!pending) return;
+      URL.revokeObjectURL(pending.url);
+      setPending(null);
+      if (take) {
+        keep(pending.index, {
+          blob: pending.blob,
+          width: pending.width,
+          height: pending.height,
+          quad: pending.quad,
+        });
+      }
+    },
+    [keep, pending],
+  );
+
   const takeShot = useCallback(async () => {
-    if (capturing.current || !target) return;
+    if (capturing.current || !target || pendingRef.current) return;
     capturing.current = true;
     stableCount.current = 0;
     setStatus('Foto wird gesucht …');
     try {
       const frame = camera.capture(CLOSE_MAX);
-      if (!frame) return;
-
-      // Zuerst über die Seitenaufnahme: Sie zeigt dieses Foto bereits und weiss
-      // damit, wie es aussieht. Das ist der verlässlichere Weg – die
-      // Kantensuche im Nahbild trifft auch einmal daneben, und dann wird mitten
-      // durchs Motiv geschnitten, ohne dass jemand es merkt.
-      let quad = await locateAsync(target.reference, frame);
-      if (!quad) {
-        const found = await detect(frame);
-        quad = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a))[0] ?? null;
-      }
-      if (!quad || polygonArea(quad) < frame.width * frame.height * FILL_MIN) {
-        setHint('Dieses Foto ist nicht formatfüllend im Bild – näher herangehen.');
-        navigator.vibrate?.([20, 60, 20]);
+      // Kein Bild – die Kamera läuft noch nicht. Auch das wird gesagt, statt
+      // den Druck auf den Auslöser verpuffen zu lassen.
+      if (!frame) {
+        setStatus('Kamera ist noch nicht bereit');
+        window.setTimeout(() => setStatus(null), 1500);
         return;
       }
 
+      // Zuerst über die Seitenaufnahme: Sie zeigt dieses Foto bereits und weiss
+      // damit, wie es aussieht. Trifft sie, steht der Zuschnitt auf wenige
+      // Punkte genau und passt zur Vorlage – genau das braucht das spätere
+      // Entspiegeln, das beide Aufnahmen übereinanderlegt.
+      let quad = await locateAsync(target.reference, frame);
+      const sure = quad !== null;
+      // Sonst über das Papier ringsum. Das ist die zweitbeste Antwort, aber
+      // eine Antwort: Am echten Album fand die frühere Kantensuche in acht von
+      // neun Fällen gar nichts, dieser Weg in neun von neun.
+      if (!quad) quad = await detectCloseupAsync(frame);
+      // Und wenn auch das nichts findet, bleibt der ganze Bildausschnitt. Was
+      // hier nicht passieren darf, ist gar nichts zu tun: Wer auslöst, hat
+      // eine Aufnahme gemacht, und die gehört ihm. Der frühere Abbruch mit
+      // einem Hinweis war eine Sackgasse – am echten Album ging die Stufe
+      // damit überhaupt nicht.
+      if (!quad) quad = fullQuad(frame.width, frame.height);
+
       const blob = await blobFromImageData(frame, 0.95);
       navigator.vibrate?.(30);
-      setShots((current) => {
-        const next = new Map(current);
-        next.set(target.index, { blob, width: frame.width, height: frame.height, quad });
-        return next;
-      });
-      setHint(null);
-      advance();
-    } finally {
+
+      if (sure) {
+        setStatus(null);
+        keep(target.index, { blob, width: frame.width, height: frame.height, quad });
+        return;
+      }
+
+      // Unsicher: Der Zuschnitt wird gezeigt, bevor er gilt. Lieber ein Tipp
+      // mehr als ein Foto, das mitten durchs Motiv geschnitten im Album landet
+      // und dort erst auffällt.
       setStatus(null);
+      setPending({
+        index: target.index,
+        blob,
+        url: URL.createObjectURL(blob),
+        width: frame.width,
+        height: frame.height,
+        quad,
+      });
+    } finally {
       capturing.current = false;
     }
-  }, [advance, camera, target]);
+  }, [camera, keep, target]);
 
   const takeShotRef = useRef(takeShot);
   takeShotRef.current = takeShot;
+
+  // Die Vorschau der Nachfrage freigeben, falls der Bildschirm verlassen wird.
+  const pendingUrl = useRef<string | null>(null);
+  pendingUrl.current = pending?.url ?? null;
+  useEffect(
+    () => () => {
+      if (pendingUrl.current) URL.revokeObjectURL(pendingUrl.current);
+    },
+    [],
+  );
 
   // Fertig, sobald alle Fotos durch sind.
   useEffect(() => {
@@ -161,19 +245,30 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
     const tick = async () => {
       if (!active) return;
       const video = camera.videoRef.current;
-      if (video && video.videoWidth > 0 && !busy.current && !capturing.current) {
+      if (video && video.videoWidth > 0 && !busy.current && !capturing.current && !pendingRef.current) {
         busy.current = true;
         try {
           const frame = camera.capture(PREVIEW_MAX);
           if (frame) {
             previewSize.current = { width: frame.width, height: frame.height };
             setAspect(frame.width / frame.height);
-            const found = await detect(frame, 420);
-            // Nur das grösste zeigen: In der Nahaufnahme ist genau ein Foto
-            // gemeint, angeschnittene Nachbarn sind nicht die Aufgabe.
-            const largest = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a)).slice(0, 1);
-            const fills =
-              largest.length === 1 && polygonArea(largest[0]) >= frame.width * frame.height * FILL_MIN;
+            // Gefragt wird nicht „liegt hier irgendein grosses Viereck?". Auf
+            // einer Albumseite ist das grösste die **Seite**, und der
+            // Selbstauslöser ging los, während das Telefon noch weit weg war –
+            // genau das war am echten Album zu sehen. Gefragt wird, ob
+            // *dieses* Foto formatfüllend im Bild liegt, und das weiss die
+            // Seitenaufnahme: Sie zeigt es bereits.
+            const current = targetRef.current;
+            let found = current ? await locateAsync(current.reference, frame) : null;
+            if (!found) {
+              // Findet die Seitenaufnahme es nicht wieder – anderes Licht,
+              // andere Schärfe –, wird über das Papier ringsum gefragt. Die
+              // frühere Kantensuche fand am echten Album fast nie etwas, und
+              // der Selbstauslöser ging deshalb nie los.
+              found = await detectCloseupAsync(frame);
+            }
+            const largest = found ? [found] : [];
+            const fills = found !== null && polygonArea(found) >= frame.width * frame.height * FILL_MIN;
 
             const exposure = exposureOf(frame);
             measure(exposure);
@@ -207,6 +302,46 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
       if (timer) window.clearTimeout(timer);
     };
   }, [camera, measure]);
+
+  if (pending) {
+    return (
+      <div className="flex min-h-dvh flex-col bg-black text-stone-100">
+        <div className="relative flex flex-1 items-center justify-center overflow-hidden">
+          <div className="relative w-full" style={{ aspectRatio: pending.width / pending.height }}>
+            <img src={pending.url} alt="Nahaufnahme" className="size-full object-cover" />
+            <QuadEditor
+              width={pending.width}
+              height={pending.height}
+              quads={[pending.quad]}
+              selected={[0]}
+              editing={0}
+              onChange={(_, quad) => setPending((current) => (current ? { ...current, quad } : current))}
+            />
+          </div>
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-4">
+            <span className="rounded-full bg-black/60 px-3 py-1.5 text-center text-sm backdrop-blur" data-testid="nah-nachfrage">
+              Passt der Zuschnitt? Ecken ziehen, dann übernehmen.
+            </span>
+          </div>
+        </div>
+
+        <div className="shrink-0 space-y-3 border-t border-white/10 bg-stone-950 px-4 pt-3 pb-6">
+          <div className="flex items-center justify-between gap-3">
+            <Button onClick={() => closePending(false)} data-testid="nah-nochmal">
+              Nochmal
+            </Button>
+            <Button variant="primary" onClick={() => closePending(true)} data-testid="nah-uebernehmen">
+              Übernehmen
+            </Button>
+          </div>
+          <p className="text-center text-[11px] leading-relaxed text-stone-500">
+            Die Seitenaufnahme hat dieses Foto im Nahbild nicht wiedererkannt – der Zuschnitt
+            stammt vom Papier ringsum und will deshalb einmal angesehen werden.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!target) {
     return <div className="min-h-dvh bg-black" />;
@@ -271,15 +406,19 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
         </div>
 
         <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-2 px-4">
-          {(status || hint || dark || quads.length > 0) && (
-            <span
-              className={`rounded-full px-3 py-1.5 text-center text-sm backdrop-blur ${
-                !status && dark ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
-              }`}
-            >
-              {status ?? (dark ? framingText('dunkel', light) : (hint ?? 'Foto erkannt – ruhig halten'))}
-            </span>
-          )}
+          <span
+            className={`rounded-full px-3 py-1.5 text-center text-sm backdrop-blur ${
+              !status && dark ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
+            }`}
+            data-testid="nah-status"
+          >
+            {status ??
+              (dark
+                ? framingText('dunkel', light)
+                : quads.length > 0
+                  ? 'Foto erkannt – ruhig halten'
+                  : 'Foto ganz ins Bild – die Ränder müssen knapp sichtbar bleiben')}
+          </span>
         </div>
 
         {settingsOpen && (
@@ -339,12 +478,24 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
         </div>
 
         <p className="text-center text-[11px] leading-relaxed text-stone-500">
-          Dieses Foto formatfüllend aufnehmen. Spiegelungen sind kein Problem – die Seitenaufnahme
+          Dieses Foto möglichst gross ins Bild nehmen, aber <em className="not-italic text-stone-300">ganz</em> –
+          ein schmaler Streifen Albumpapier ringsum sagt der App, wo es aufhört. Fehlt er, wird der
+          Zuschnitt nachgefragt statt geraten. Spiegelungen sind kein Problem – die Seitenaufnahme
           liefert die Stellen, die hier glänzen.
         </p>
       </div>
     </div>
   );
+}
+
+/** Der ganze Bildausschnitt – die Antwort, wenn nichts gefunden wurde. */
+function fullQuad(width: number, height: number): Quad {
+  return [
+    { x: 0, y: 0 },
+    { x: width - 1, y: 0 },
+    { x: width - 1, y: height - 1 },
+    { x: 0, y: height - 1 },
+  ];
 }
 
 function TorchIcon() {

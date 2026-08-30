@@ -172,6 +172,29 @@ describe('Erfassung in zwei Stufen', () => {
     expect(polygonArea(found[0])).toBeLessThan(size.width * size.height * 0.3);
   });
 
+  it('lässt keine Ecke aus dem Bild ragen', () => {
+    // Das Viereck wird bewusst geweitet, damit nichts angeschnitten wird.
+    // Liegt die Seite nah am Bildrand, landet eine Ecke dabei ausserhalb – und
+    // in der Oberfläche ist sie dann nicht mehr zu greifen. Genau das ist am
+    // echten Album passiert.
+    const knapp: Quad = [
+      { x: 12, y: 10 },
+      { x: 1388, y: 16 },
+      { x: 1384, y: 1040 },
+      { x: 8, y: 1034 },
+    ];
+    const scene = shot(knapp);
+    const page = detectPage(scene);
+
+    expect(page).not.toBeNull();
+    for (const corner of page!) {
+      expect(corner.x).toBeGreaterThanOrEqual(0);
+      expect(corner.y).toBeGreaterThanOrEqual(0);
+      expect(corner.x).toBeLessThanOrEqual(scene.width - 1);
+      expect(corner.y).toBeLessThanOrEqual(scene.height - 1);
+    }
+  });
+
   it('gibt keine Seite zurück, wenn sie bis an den Bildrand reicht', () => {
     // Dann ist das ganze Bild die Seite, und es gibt nichts zu entzerren –
     // der Aufrufer nimmt das Bild, wie es ist.
