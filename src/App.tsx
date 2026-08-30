@@ -115,7 +115,13 @@ export function App() {
       // Erst die Seite, dann die Fotos darauf – so weiss jedes Foto, wo es
       // hergekommen ist.
       const stored = page
-        ? await addPage({ albumId: album.id, blob: page.blob, width: page.width, height: page.height })
+        ? await addPage({
+            albumId: album.id,
+            blob: page.blob,
+            width: page.width,
+            height: page.height,
+            marks: page.marks,
+          })
         : null;
       for (const photo of photos) {
         await addScan({

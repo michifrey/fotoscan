@@ -10,6 +10,7 @@ import { hasGlare } from '../lib/imaging/glare';
 import { defaultQuad } from '../lib/imaging/detect';
 import { detectAtAsync, detectPhotosAsync, mergePhotosAsync, refine } from '../lib/pipeline';
 import type { Closeup } from '../lib/imaging/closeup';
+import type { PageMarks } from '../lib/storage';
 import type { Shot } from './CaptureScreen';
 import { CloseupScreen } from './CloseupScreen';
 import type { CloseupShot, CloseupTarget } from './CloseupScreen';
@@ -29,6 +30,14 @@ export interface PageImage {
   blob: Blob;
   width: number;
   height: number;
+  /**
+   * Die geprüften Vierecke, in Koordinaten dieses Bildes.
+   *
+   * Nicht in denen der vollen Aufnahme: Gespeichert wird die verkleinerte
+   * Fassung, und ein Polygon, das sich auf ein Bild bezieht, das niemand mehr
+   * hat, ist wertlos.
+   */
+  marks: PageMarks;
 }
 
 interface Props {
@@ -355,6 +364,13 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
           blob: await blobFromImageData(small.image, 0.82),
           width: small.image.width,
           height: small.image.height,
+          // Was hier mitgeht, ist keine Zierde: Der Nutzer hat diese Vierecke
+          // gesehen, zurechtgezogen und bestätigt. Damit ist es eine geprüfte
+          // Wahrheit – die einzige, die dieses Projekt in Mengen bekommen kann.
+          marks: {
+            page: scaleQuad(pageQuad, small.scale),
+            photos: chosen.map((quad) => scaleQuad(quad, small.scale)),
+          },
         });
       } finally {
         setProgress(null);

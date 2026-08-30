@@ -1,3 +1,4 @@
+import type { Quad } from './imaging/types';
 const DB_NAME = 'fotoscan';
 const DB_VERSION = 2;
 const ALBUMS = 'albums';
@@ -48,6 +49,27 @@ export interface Scan {
  * welche Bilder nebeneinander lagen, was daneben stand. Die Übersichtsaufnahme
  * bewahrt ihn auf, verkleinert und deshalb billig.
  */
+/**
+ * Wo auf einer Albumseite was liegt – so, wie der Nutzer es bestätigt hat.
+ *
+ * Das ist der Grund, warum es diese Angabe gibt: In der zweiten Stufe sieht er
+ * die Vorschläge der Erkennung, zieht Ecken zurecht, nimmt ein übersehenes Foto
+ * mit einem Tipp dazu und wählt ab, was keines ist. Was am Ende dasteht, ist
+ * eine **von Hand geprüfte Wahrheit** – genau das, woran sich eine Erkennung
+ * messen und woraus sich eine lernen lässt. Bisher wurde sie nach dem
+ * Speichern weggeworfen.
+ *
+ * Die Vierecke liegen in den Koordinaten des gespeicherten Seitenbildes, nicht
+ * der vollen Aufnahme. Damit ist der Eintrag für sich lesbar: ein Bild und die
+ * Polygone darauf, ohne Umrechnung und ohne Wissen über diese App.
+ */
+export interface PageMarks {
+  /** Die Albumseite in der Aufnahme. */
+  page: Quad;
+  /** Die Fotos darauf, in derselben Reihenfolge wie gespeichert. */
+  photos: Quad[];
+}
+
 export interface Page {
   id: string;
   albumId: string;
@@ -56,6 +78,8 @@ export interface Page {
   width: number;
   height: number;
   blob: Blob;
+  /** Die geprüften Vierecke auf dieser Seite. Fehlt bei älteren Alben. */
+  marks?: PageMarks;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;

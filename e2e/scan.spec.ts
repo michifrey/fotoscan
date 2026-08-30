@@ -131,3 +131,53 @@ test('die Ecken der Seite antippen', async ({ page }) => {
   await expect(page.getByTestId('fotos-hinweis')).not.toHaveText(/werden gesucht/, { timeout: 30_000 });
   await expect(gewaehlt(page)).toHaveText('3 Fotos einzeln scannen');
 });
+
+test('die geprüften Vierecke der Seite werden mitgespeichert', async ({ page }) => {
+  // Was der Nutzer in der zweiten Stufe bestätigt, ist eine von Hand geprüfte
+  // Wahrheit – und bisher wurde sie nach dem Speichern weggeworfen. Dieser
+  // Ablauf hält fest, dass sie in der Datenbank ankommt: Ohne ihn könnte die
+  // Verkabelung reissen, ohne dass ein einziger Test rot würde.
+  await page.goto('/');
+  await page.getByTestId('album-name').fill('Marken');
+  await page.getByTestId('create-album').click();
+  await page.getByTestId('scan').click();
+  await page.getByTestId('import-input').setInputFiles(FIXTURE);
+
+  await seiteBestaetigen(page);
+  await expect(gewaehlt(page)).toHaveText('3 Fotos einzeln scannen');
+  await page.getByTestId('accept').click();
+  await expect(page.getByTestId('shutter')).toBeVisible({ timeout: 60_000 });
+
+  const seiten = await page.evaluate(
+    () =>
+      new Promise<{ width: number; height: number; marks?: { page: unknown[]; photos: unknown[][] } }[]>(
+        (resolve, reject) => {
+          const request = indexedDB.open('fotoscan', 2);
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            const all = request.result.transaction('pages', 'readonly').objectStore('pages').getAll();
+            all.onsuccess = () => resolve(all.result);
+            all.onerror = () => reject(all.error);
+          };
+        },
+      ),
+  );
+
+  expect(seiten).toHaveLength(1);
+  const marks = seiten[0].marks;
+  expect(marks).toBeDefined();
+  // Ein Viereck für die Seite, und je eines für die drei gewählten Fotos.
+  expect(marks!.page).toHaveLength(4);
+  expect(marks!.photos).toHaveLength(3);
+
+  // Und sie liegen im gespeicherten Seitenbild, nicht in der vollen Aufnahme –
+  // die gibt es nach dem Speichern nicht mehr.
+  for (const quad of [marks!.page, ...marks!.photos]) {
+    for (const point of quad as { x: number; y: number }[]) {
+      expect(point.x).toBeGreaterThanOrEqual(-1);
+      expect(point.y).toBeGreaterThanOrEqual(-1);
+      expect(point.x).toBeLessThanOrEqual(seiten[0].width + 1);
+      expect(point.y).toBeLessThanOrEqual(seiten[0].height + 1);
+    }
+  }
+});
