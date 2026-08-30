@@ -122,6 +122,11 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
    */
   const page = useMemo<RgbaImage | null>(() => {
     if (step !== 'fotos') return null;
+    // Bewusst ohne die Aufnahme: Die Rückrechnung des Seitenverhältnisses
+    // stützt sich darauf, dass ein Abzug in einem Normformat vorliegt. Eine
+    // Albumseite tut das nicht – sie ist so gross, wie der Buchbinder wollte.
+    // Und es schadet auch nichts: Diese Entzerrung ist eine Zwischenstufe, die
+    // fertigen Fotos entstehen später aus der Aufnahme selbst.
     const size = outputSize(pageQuad, PAGE_MAX);
     return warpPerspective(frame, pageQuad, size.width, size.height);
   }, [frame, pageQuad, step]);

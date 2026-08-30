@@ -36,7 +36,12 @@ export function mergePhotos(frames: RgbaImage[], baseQuads: Quad[]): RgbaImage[]
   );
 
   return baseQuads.map((baseQuad, photo) => {
-    const size = outputSize(baseQuad);
+    // Die Aufnahme mitgeben: Aus ihr und den vier Ecken fällt das *wahre*
+    // Seitenverhältnis des Abzugs. Ohne sie nähme die Entzerrung die längste
+    // beobachtete Kante – und die ist unter Perspektive um bis zu sechs
+    // Prozent daneben. Hier ist die Stelle, an der das ins fertige Foto
+    // einginge und nie wieder herauszubekommen wäre.
+    const size = outputSize(baseQuad, undefined, frames[0]);
     const warped: RgbaImage[] = [];
 
     for (let frame = 0; frame < frames.length; frame++) {
