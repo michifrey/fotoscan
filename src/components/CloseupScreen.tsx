@@ -86,6 +86,8 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
   const [dark, setDark] = useState(false);
 
   const target = targets[position];
+  const targetRef = useRef(target);
+  targetRef.current = target;
 
   useEffect(() => {
     if (chosen.current || deviceId !== null || camera.cameras.length === 0) return;
@@ -168,12 +170,16 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
           if (frame) {
             previewSize.current = { width: frame.width, height: frame.height };
             setAspect(frame.width / frame.height);
-            const found = await detect(frame, 420);
-            // Nur das grösste zeigen: In der Nahaufnahme ist genau ein Foto
-            // gemeint, angeschnittene Nachbarn sind nicht die Aufgabe.
-            const largest = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a)).slice(0, 1);
-            const fills =
-              largest.length === 1 && polygonArea(largest[0]) >= frame.width * frame.height * FILL_MIN;
+            // Gefragt wird nicht „liegt hier irgendein grosses Viereck?". Auf
+            // einer Albumseite ist das grösste die **Seite**, und der
+            // Selbstauslöser ging los, während das Telefon noch weit weg war –
+            // genau das war am echten Album zu sehen. Gefragt wird, ob
+            // *dieses* Foto formatfüllend im Bild liegt, und das weiss die
+            // Seitenaufnahme: Sie zeigt es bereits.
+            const current = targetRef.current;
+            const found = current ? await locateAsync(current.reference, frame) : null;
+            const largest = found ? [found] : [];
+            const fills = found !== null && polygonArea(found) >= frame.width * frame.height * FILL_MIN;
 
             const exposure = exposureOf(frame);
             measure(exposure);
@@ -271,15 +277,20 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
         </div>
 
         <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-2 px-4">
-          {(status || hint || dark || quads.length > 0) && (
-            <span
-              className={`rounded-full px-3 py-1.5 text-center text-sm backdrop-blur ${
-                !status && dark ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
-              }`}
-            >
-              {status ?? (dark ? framingText('dunkel', light) : (hint ?? 'Foto erkannt – ruhig halten'))}
-            </span>
-          )}
+          <span
+            className={`rounded-full px-3 py-1.5 text-center text-sm backdrop-blur ${
+              !status && dark ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
+            }`}
+            data-testid="nah-status"
+          >
+            {status ??
+              (dark
+                ? framingText('dunkel', light)
+                : (hint ??
+                  (quads.length > 0
+                    ? 'Foto erkannt – ruhig halten'
+                    : 'Dieses Foto formatfüllend ins Bild nehmen')))}
+          </span>
         </div>
 
         {settingsOpen && (

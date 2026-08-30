@@ -339,6 +339,14 @@ einbinden.
   nebeneinander, die Zeile zwischen zwei Fotos, eine Seite ganz ohne
   Handschrift, eine Zeile weitab von jedem Foto – und ein Ausschnitt, der die
   Nachbarfotos draussen lässt.
+- Für den Weg zum Worker: dass ein Auftrag eine **Frist** hat. Bleibt der
+  Worker stumm – auf einem Telefon reicht dafür ein zu grosses Bild –, kommt
+  weder Antwort noch Fehler; ohne Frist wartet die Oberfläche bis zum Neuladen,
+  und genau so blieb am echten Album „Foto wird gesucht …" stehen. Dazu, dass
+  zur Analyse nur ein verkleinertes Bild hinübergeht (die Rechnungen arbeiten
+  innen auf 720 und 260 Punkten; eine volle Aufnahme sind über dreissig
+  Megabyte je Kopie) und dass die Antwort wieder in die Koordinaten der vollen
+  Aufnahme zurückgerechnet wird.
 - Für die Sicherung: die Prüfsumme gegen `git hash-object`, der Weg vom Album
   in Dateien und zurück, das Anlegen des Zweigs im leeren Repository, und dass
   ein zweites Sichern nur die geänderte Datei hochlädt – geprüft an einem
