@@ -131,3 +131,84 @@ test('die Ecken der Seite antippen', async ({ page }) => {
   await expect(page.getByTestId('fotos-hinweis')).not.toHaveText(/werden gesucht/, { timeout: 30_000 });
   await expect(gewaehlt(page)).toHaveText('3 Fotos einzeln scannen');
 });
+
+test('die geprüften Vierecke der Seite werden mitgespeichert', async ({ page }) => {
+  // Was der Nutzer in der zweiten Stufe bestätigt, ist eine von Hand geprüfte
+  // Wahrheit – und bisher wurde sie nach dem Speichern weggeworfen. Dieser
+  // Ablauf hält fest, dass sie in der Datenbank ankommt: Ohne ihn könnte die
+  // Verkabelung reissen, ohne dass ein einziger Test rot würde.
+  await page.goto('/');
+  await page.getByTestId('album-name').fill('Marken');
+  await page.getByTestId('create-album').click();
+  await page.getByTestId('scan').click();
+  await page.getByTestId('import-input').setInputFiles(FIXTURE);
+
+  await seiteBestaetigen(page);
+  await expect(gewaehlt(page)).toHaveText('3 Fotos einzeln scannen');
+  await page.getByTestId('accept').click();
+  await expect(page.getByTestId('shutter')).toBeVisible({ timeout: 60_000 });
+
+  const seiten = await page.evaluate(
+    () =>
+      new Promise<{ width: number; height: number; marks?: { page: unknown[]; photos: unknown[][] } }[]>(
+        (resolve, reject) => {
+          const request = indexedDB.open('fotoscan', 2);
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            const all = request.result.transaction('pages', 'readonly').objectStore('pages').getAll();
+            all.onsuccess = () => resolve(all.result);
+            all.onerror = () => reject(all.error);
+          };
+        },
+      ),
+  );
+
+  expect(seiten).toHaveLength(1);
+  const marks = seiten[0].marks;
+  expect(marks).toBeDefined();
+  // Ein Viereck für die Seite, und je eines für die drei gewählten Fotos.
+  expect(marks!.page).toHaveLength(4);
+  expect(marks!.photos).toHaveLength(3);
+
+  // Und sie liegen im gespeicherten Seitenbild, nicht in der vollen Aufnahme –
+  // die gibt es nach dem Speichern nicht mehr.
+  for (const quad of [marks!.page, ...marks!.photos]) {
+    for (const point of quad as { x: number; y: number }[]) {
+      expect(point.x).toBeGreaterThanOrEqual(-1);
+      expect(point.y).toBeGreaterThanOrEqual(-1);
+      expect(point.x).toBeLessThanOrEqual(seiten[0].width + 1);
+      expect(point.y).toBeLessThanOrEqual(seiten[0].height + 1);
+    }
+  }
+});
+
+test('die Lupe zeigt, wohin die Ecke kommt', async ({ page }) => {
+  // Der Finger verdeckt genau die Stelle, auf die es ankommt, und die Kante
+  // einer Albumseite ist auf einem Telefonbildschirm ein Haar breit. Die Lupe
+  // erscheint, solange gedrückt wird, und verschwindet beim Loslassen –
+  // gesetzt wird die Ecke erst dann, bis dahin lässt sie sich schieben.
+  await page.goto('/');
+  await page.getByTestId('album-name').fill('Lupe');
+  await page.getByTestId('create-album').click();
+  await page.getByTestId('scan').click();
+  await page.getByTestId('import-input').setInputFiles(FIXTURE);
+  await expect(page.getByRole('heading', { name: 'Seite prüfen' })).toBeVisible({ timeout: 30_000 });
+
+  await page.getByTestId('ecken-setzen').click();
+  const flaeche = page.getByTestId('ecken-tippen');
+  const box = (await flaeche.boundingBox())!;
+
+  await expect(page.getByTestId('lupe')).toHaveCount(0);
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await expect(page.getByTestId('lupe')).toBeVisible();
+
+  // Beim Schieben bleibt sie stehen und folgt der Stelle.
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.22);
+  await expect(page.getByTestId('lupe')).toBeVisible();
+
+  await page.mouse.up();
+  await expect(page.getByTestId('lupe')).toHaveCount(0);
+  // Und die erste Ecke ist gesetzt – es geht zur zweiten.
+  await expect(page.getByTestId('seite-hinweis')).toHaveText(/oben rechts.*2 von 4/);
+});

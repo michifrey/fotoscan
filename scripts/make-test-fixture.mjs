@@ -82,3 +82,63 @@ mkdirSync(OUT, { recursive: true });
 writeFileSync(resolve(OUT, 'albumseite.png'), encodePng(pixels, WIDTH, HEIGHT));
 console.log('geschrieben: e2e/fixtures/albumseite.png');
 
+/*
+ * Dieselbe Seite noch einmal als Kamerabild.
+ *
+ * Chromiums eingebautes Testbild ist eine fast einfarbige grüne Fläche mit
+ * einem drehenden Kreissegment. Wer darauf eine Stelle wiederfinden will,
+ * findet nichts – zu Recht, es steht ja nichts darin. Mit
+ * `--use-file-for-fake-video-capture` liefert Chromium stattdessen den Inhalt
+ * einer Y4M-Datei: rohe Bildpunkte mit einer Zeile Kopf, mehr ist das Format
+ * nicht. Ein einziges Bild genügt, Chromium wiederholt es.
+ */
+const VIDEO_WIDTH = 960;
+const VIDEO_HEIGHT = 540;
+
+function y4mFrame() {
+  const y = new Uint8Array(VIDEO_WIDTH * VIDEO_HEIGHT);
+  const u = new Uint8Array((VIDEO_WIDTH / 2) * (VIDEO_HEIGHT / 2));
+  const v = new Uint8Array((VIDEO_WIDTH / 2) * (VIDEO_HEIGHT / 2));
+
+  // Gezeigt wird die Seite mit einem schmalen Streifen Tisch – nicht die
+  // ganze Vorlage. Sonst dominiert der dunkle Tisch die Helligkeitsmessung,
+  // und der Sucher meldet „zu dunkel", bevor irgendeine Führung zu sehen ist.
+  const CROP_X = 95;
+  const CROP_Y = 63;
+  const CROP_W = 1210;
+  const CROP_H = 874;
+  const factor = Math.min(VIDEO_WIDTH / CROP_W, VIDEO_HEIGHT / CROP_H);
+  const left = (VIDEO_WIDTH - CROP_W * factor) / 2;
+  const top = (VIDEO_HEIGHT - CROP_H * factor) / 2;
+
+  for (let row = 0; row < VIDEO_HEIGHT; row++) {
+    for (let col = 0; col < VIDEO_WIDTH; col++) {
+      const sx = CROP_X + Math.round((col - left) / factor);
+      const sy = CROP_Y + Math.round((row - top) / factor);
+      let r = 24;
+      let g = 20;
+      let b = 18;
+      if (sx >= 0 && sy >= 0 && sx < WIDTH && sy < HEIGHT) {
+        const i = (sy * WIDTH + sx) * 4;
+        [r, g, b] = [pixels[i], pixels[i + 1], pixels[i + 2]];
+      }
+      y[row * VIDEO_WIDTH + col] = Math.round(0.257 * r + 0.504 * g + 0.098 * b + 16);
+      // Farbe steht nur an jedem zweiten Punkt – so will es I420.
+      if (row % 2 === 0 && col % 2 === 0) {
+        const j = (row / 2) * (VIDEO_WIDTH / 2) + col / 2;
+        u[j] = Math.round(-0.148 * r - 0.291 * g + 0.439 * b + 128);
+        v[j] = Math.round(0.439 * r - 0.368 * g - 0.071 * b + 128);
+      }
+    }
+  }
+  const header = Buffer.from(
+    `YUV4MPEG2 W${VIDEO_WIDTH} H${VIDEO_HEIGHT} F30:1 It A1:1 C420mpeg2\nFRAME\n`,
+    'ascii',
+  );
+  return Buffer.concat([header, Buffer.from(y), Buffer.from(u), Buffer.from(v)]);
+}
+
+writeFileSync(resolve(OUT, 'albumseite.y4m'), y4mFrame());
+console.log('geschrieben: e2e/fixtures/albumseite.y4m');
+
+

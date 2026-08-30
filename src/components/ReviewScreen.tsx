@@ -10,9 +10,10 @@ import { hasGlare } from '../lib/imaging/glare';
 import { defaultQuad } from '../lib/imaging/detect';
 import { detectAtAsync, detectPhotosAsync, mergePhotosAsync, refine } from '../lib/pipeline';
 import type { Closeup } from '../lib/imaging/closeup';
+import type { PageMarks } from '../lib/storage';
 import type { Shot } from './CaptureScreen';
 import { CloseupScreen } from './CloseupScreen';
-import type { CloseupShot, CloseupTarget } from './CloseupScreen';
+import type { CloseupOverview, CloseupShot, CloseupTarget } from './CloseupScreen';
 import { QuadEditor } from './QuadEditor';
 import { BackIcon, Button, IconButton, Spinner, Switch, TopBar } from './ui';
 
@@ -29,6 +30,14 @@ export interface PageImage {
   blob: Blob;
   width: number;
   height: number;
+  /**
+   * Die geprüften Vierecke, in Koordinaten dieses Bildes.
+   *
+   * Nicht in denen der vollen Aufnahme: Gespeichert wird die verkleinerte
+   * Fassung, und ein Polygon, das sich auf ein Bild bezieht, das niemand mehr
+   * hat, ist wertlos.
+   */
+  marks: PageMarks;
 }
 
 interface Props {
@@ -58,6 +67,10 @@ const PREVIEW_MAX = 420;
 
 /** Längste Kante, auf die die Seite entzerrt wird. */
 const PAGE_MAX = 2200;
+/** Kantenlänge der Landkarte in der dritten Stufe – sie wird klein gezeigt. */
+const MAP_MAX = 520;
+/** Kantenlänge des Seitenankers – die Referenz fürs Wiederfinden im Sucher. */
+const ANCHOR_MAX = 900;
 
 /** Kantenlänge eines von Hand gesetzten Vierecks, als Anteil der Seitenbreite. */
 const HAND_SIZE = 0.22;
@@ -88,6 +101,8 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [targets, setTargets] = useState<CloseupTarget[] | null>(null);
+  const [overview, setOverview] = useState<CloseupOverview | null>(null);
+  const [pageReference, setPageReference] = useState<{ image: RgbaImage; quads: Quad[] } | null>(null);
   /** Fotos, auf denen auch nach dem Verrechnen noch eine Spiegelung liegt. */
   const [glare, setGlare] = useState<number[]>([]);
 
@@ -339,7 +354,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
             // sprengt den Rahmen eines Telefons. Ausgepackt wird deshalb erst
             // hier, eine nach der anderen.
             const image = await imageDataFromBlob(near.blob, Math.max(near.width, near.height));
-            closeup = { image, quad: near.quad };
+            closeup = { image, quad: near.quad, glare: near.glare };
           }
           const image = await refine({ reference: references[i], closeup, options, rotation });
           photos.push({
@@ -355,6 +370,13 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
           blob: await blobFromImageData(small.image, 0.82),
           width: small.image.width,
           height: small.image.height,
+          // Was hier mitgeht, ist keine Zierde: Der Nutzer hat diese Vierecke
+          // gesehen, zurechtgezogen und bestätigt. Damit ist es eine geprüfte
+          // Wahrheit – die einzige, die dieses Projekt in Mengen bekommen kann.
+          marks: {
+            page: scaleQuad(pageQuad, small.scale),
+            photos: chosen.map((quad) => scaleQuad(quad, small.scale)),
+          },
         });
       } finally {
         setProgress(null);
@@ -379,6 +401,25 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
         };
       }),
     );
+    // Und die Seite als Landkarte dazu: Ohne sie sagt „Foto 3 von 5" nichts
+    // darüber, welcher Abzug auf der Seite gemeint ist.
+    const mapSize = outputSize(fullQuad(page.width, page.height), MAP_MAX);
+    const map = warpPerspective(page, fullQuad(page.width, page.height), mapSize.width, mapSize.height);
+    const factor = mapSize.width / page.width;
+    setOverview({
+      url: URL.createObjectURL(await blobFromImageData(map, 0.7)),
+      width: mapSize.width,
+      height: mapSize.height,
+      quads: selected.map((index) => scaleQuad(quads[index], factor)),
+    });
+    // Der Seitenanker: dieselbe Seite als Bild, gross genug fürs Wiederfinden
+    // im Sucher, mit den Ziel-Vierecken in seinen Koordinaten.
+    const anchorSize = outputSize(fullQuad(page.width, page.height), ANCHOR_MAX);
+    const anchorFactor = anchorSize.width / page.width;
+    setPageReference({
+      image: warpPerspective(page, fullQuad(page.width, page.height), anchorSize.width, anchorSize.height),
+      quads: selected.map((index) => scaleQuad(quads[index], anchorFactor)),
+    });
     setTargets(list);
   }, [page, quads, selected]);
 
@@ -387,15 +428,22 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       current?.forEach((entry) => URL.revokeObjectURL(entry.url));
       return null;
     });
+    setOverview((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return null;
+    });
+    setPageReference(null);
   }, []);
 
   // Nur was auch gespeichert wird, ist einen Hinweis wert.
   const betroffen = glare.filter((index) => selected.includes(index));
 
-  if (targets) {
+  if (targets && overview && pageReference) {
     return (
       <CloseupScreen
         targets={targets}
+        overview={overview}
+        pageReference={pageReference}
         existing={new Map()}
         onDone={(shots) => {
           closeCloseups();
@@ -443,6 +491,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
               onChange={(_, quad) => setPageQuad(insideImage(quad, frame.width, frame.height))}
               onTap={awaiting === null ? undefined : (point) => setCorner(point)}
               awaiting={awaiting ?? undefined}
+              source={sourceUrl ?? undefined}
             />
           </div>
 
@@ -511,6 +560,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
               onActivate={setEditing}
               onAddAt={(point) => void addAt(point)}
               onChange={(index, quad) => setQuads((current) => current.map((q, i) => (i === index ? quad : q)))}
+              source={pageUrl ?? undefined}
             />
           )}
         </div>

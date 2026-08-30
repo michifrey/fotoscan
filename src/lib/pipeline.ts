@@ -5,6 +5,7 @@ import { scaleQuad } from './imaging/geometry';
 import { refinePhoto } from './imaging/closeup';
 import type { Closeup } from './imaging/closeup';
 import { locate } from './imaging/locate';
+import type { LocateOptions } from './imaging/locate';
 import { mergePhotos } from './imaging/stack';
 import type { Pt, Quad, RgbaImage } from './imaging/types';
 import type { TransferImage, WorkerRequest, WorkerResponse } from '../worker/pipeline.worker';
@@ -167,18 +168,22 @@ export async function detectAtAsync(page: RgbaImage, point: Pt): Promise<Quad | 
 }
 
 /** Das Foto der Seitenaufnahme im Nahbild wiederfinden. */
-export async function locateAsync(reference: RgbaImage, frame: RgbaImage): Promise<Quad | null> {
+export async function locateAsync(
+  reference: RgbaImage,
+  frame: RgbaImage,
+  options?: LocateOptions,
+): Promise<Quad | null> {
   const small = forAnalysis(frame);
   const first = toTransfer(forAnalysis(reference).image);
   const second = toTransfer(small.image);
   try {
-    const response = await send({ id: nextId++, type: 'locate', reference: first, frame: second }, [
+    const response = await send({ id: nextId++, type: 'locate', reference: first, frame: second, options }, [
       first.data,
       second.data,
     ]);
     return response.type === 'locate' && response.quad ? scaleQuad(response.quad, small.scale) : null;
   } catch {
-    return locate(reference, frame);
+    return locate(reference, frame, options);
   }
 }
 
@@ -229,7 +234,10 @@ export interface RefineRequest {
 export async function refine({ reference, closeup, options, rotation }: RefineRequest): Promise<RgbaImage> {
   const referencePayload = toTransfer(reference);
   const closeupPayload = closeup ? toTransfer(closeup.image) : null;
-  const transfer = closeupPayload ? [referencePayload.data, closeupPayload.data] : [referencePayload.data];
+  const glarePayload = closeup?.glare ? toTransfer(closeup.glare) : null;
+  const transfer = [referencePayload.data];
+  if (closeupPayload) transfer.push(closeupPayload.data);
+  if (glarePayload) transfer.push(glarePayload.data);
   try {
     const response = await send(
       {
@@ -238,6 +246,7 @@ export async function refine({ reference, closeup, options, rotation }: RefineRe
         reference: referencePayload,
         closeup: closeupPayload,
         quad: closeup ? closeup.quad : null,
+        glare: glarePayload,
         options,
         rotation,
       },

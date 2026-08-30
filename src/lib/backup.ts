@@ -1,4 +1,4 @@
-import type { Album, Page, Scan } from './storage';
+import type { Album, Page, PageMarks, Scan } from './storage';
 import type { RemoteFile } from './github';
 
 /**
@@ -20,6 +20,13 @@ export interface Manifest {
     width: number;
     height: number;
     file: string;
+    /**
+     * Die geprüften Vierecke auf dieser Seite, in Koordinaten der Bilddatei
+     * daneben. Damit ist die Sicherung vollständig – bisher ging verloren, *wo*
+     * die Fotos auf der Seite lagen – und zugleich ein gelabelter Datensatz:
+     * ein Bild und die Polygone darauf, von Hand geprüft.
+     */
+    marks?: PageMarks;
   }[];
   photos: {
     id: string;
@@ -76,6 +83,7 @@ export async function buildFiles(album: Album, scans: Scan[], pages: Page[]): Pr
       width: page.width,
       height: page.height,
       file,
+      marks: page.marks,
     });
   }
 
@@ -146,6 +154,7 @@ export function readFiles(files: RemoteFile[]): Restored {
       width: page.width,
       height: page.height,
       blob: jpeg(data),
+      marks: page.marks,
     });
   }
 

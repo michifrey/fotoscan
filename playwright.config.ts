@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 4177;
@@ -38,6 +39,26 @@ export default defineConfig({
         launchOptions: {
           executablePath,
           args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+        },
+      },
+    },
+    {
+      // Hier zeigt die Kamera die Albumseite selbst (als Y4M eingespielt).
+      // Chromiums eingebautes Testbild ist eine fast einfarbige Fläche – wer
+      // darauf eine Stelle wiederfinden will, findet nichts, zu Recht. Die
+      // Führung der Nahaufnahme und die Duplikatsperre stehen aber genau auf
+      // dem Wiederfinden; sie brauchen ein Kamerabild mit Inhalt.
+      name: 'mit-albumseite',
+      testMatch: /fuehrung\.spec\.ts/,
+      use: {
+        permissions: ['camera'],
+        launchOptions: {
+          executablePath,
+          args: [
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+            `--use-file-for-fake-video-capture=${fileURLToPath(new URL('./e2e/fixtures/albumseite.y4m', import.meta.url))}`,
+          ],
         },
       },
     },

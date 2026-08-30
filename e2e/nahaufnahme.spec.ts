@@ -90,3 +90,63 @@ test('der Auslöser führt immer weiter, auch wenn nichts erkannt wird', async (
   if (await nachfrage.isVisible()) await page.getByTestId('nah-uebernehmen').click();
   await expect(page.getByText('Foto 2 · 2 von 3')).toBeVisible({ timeout: 30_000 });
 });
+
+test('die Übersicht führt durch die Seite und lässt springen', async ({ page }) => {
+  // Bisher stand hier nur „Foto 3 von 5". Das sagt nichts darüber, *welcher*
+  // Abzug auf der Seite gemeint ist, und nichts darüber, was noch aussteht.
+  // Die Landkarte sagt beides – und lässt die Reihenfolge frei.
+  await page.goto('/');
+  await page.getByTestId('album-name').fill('Übersicht');
+  await page.getByTestId('create-album').click();
+  await page.getByTestId('scan').click();
+  await page.getByRole('button', { name: /Auslöser/ }).click();
+  await page.getByTestId('import-input').setInputFiles(FIXTURE);
+  await seiteBestaetigen(page);
+
+  await page.getByTestId('details').click();
+  await expect(page.getByText('Foto 1 · 1 von 3')).toBeVisible();
+  await expect(page.getByTestId('karte-stand')).toHaveText(/0 von 3/);
+
+  // Alle drei stehen auf der Karte, jedes mit seiner Nummer.
+  for (const i of [0, 1, 2]) {
+    await expect(page.getByTestId(`karte-${i}`)).toBeVisible();
+  }
+
+  // Ein Tipp auf das dritte springt dorthin – ohne die beiden davor.
+  await page.getByTestId('karte-2').click();
+  await expect(page.getByText('Foto 3 · 3 von 3')).toBeVisible();
+
+  // Und zurück auf das erste.
+  await page.getByTestId('karte-0').click();
+  await expect(page.getByText('Foto 1 · 1 von 3')).toBeVisible();
+});
+
+test('ein übersprungenes Foto kommt nicht sofort wieder, bleibt aber erreichbar', async ({ page }) => {
+  // Der Grund, warum „weiter" nicht mehr stur die nächste Nummer nimmt: Ein
+  // übersprungenes stünde sonst gleich wieder an, ein schon aufgenommenes
+  // ein zweites Mal.
+  await page.goto('/');
+  await page.getByTestId('album-name').fill('Auslassen');
+  await page.getByTestId('create-album').click();
+  await page.getByTestId('scan').click();
+  await page.getByRole('button', { name: /Auslöser/ }).click();
+  await page.getByTestId('import-input').setInputFiles(FIXTURE);
+  await seiteBestaetigen(page);
+
+  await page.getByTestId('details').click();
+  await page.getByRole('button', { name: 'Überspringen' }).click();
+  await expect(page.getByText('Foto 2 · 2 von 3')).toBeVisible();
+
+  // Über die Karte ist es weiterhin zu erreichen.
+  await page.getByTestId('karte-0').click();
+  await expect(page.getByText('Foto 1 · 1 von 3')).toBeVisible();
+
+  // Und der Fall, an dem sich zeigt, dass „weiter" wirklich das nächste
+  // **offene** sucht: Vom letzten aus übersprungen geht es nicht ans Ende,
+  // sondern zurück zu dem, das noch aussteht.
+  await page.getByTestId('karte-2').click();
+  await expect(page.getByText('Foto 3 · 3 von 3')).toBeVisible();
+  await page.getByRole('button', { name: 'Überspringen' }).click();
+  await expect(page.getByText('Foto 1 · 1 von 3')).toBeVisible();
+});
+
