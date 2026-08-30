@@ -348,7 +348,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
             // sprengt den Rahmen eines Telefons. Ausgepackt wird deshalb erst
             // hier, eine nach der anderen.
             const image = await imageDataFromBlob(near.blob, Math.max(near.width, near.height));
-            closeup = { image, quad: near.quad };
+            closeup = { image, quad: near.quad, glare: near.glare };
           }
           const image = await refine({ reference: references[i], closeup, options, rotation });
           photos.push({

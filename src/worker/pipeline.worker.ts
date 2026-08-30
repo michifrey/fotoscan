@@ -26,6 +26,7 @@ export type WorkerRequest =
       reference: TransferImage;
       closeup: TransferImage | null;
       quad: Quad | null;
+      glare: TransferImage | null;
       options: EnhanceOptions;
       rotation: number;
     };
@@ -113,7 +114,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     if (request.type !== 'refine') return;
 
     const closeup =
-      request.closeup && request.quad ? { image: toRgba(request.closeup), quad: request.quad } : null;
+      request.closeup && request.quad
+        ? {
+            image: toRgba(request.closeup),
+            quad: request.quad,
+            glare: request.glare ? toRgba(request.glare) : undefined,
+          }
+        : null;
     const image = toTransfer(
       refinePhoto(toRgba(request.reference), closeup, request.options, request.rotation),
     );

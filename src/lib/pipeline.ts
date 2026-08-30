@@ -229,7 +229,10 @@ export interface RefineRequest {
 export async function refine({ reference, closeup, options, rotation }: RefineRequest): Promise<RgbaImage> {
   const referencePayload = toTransfer(reference);
   const closeupPayload = closeup ? toTransfer(closeup.image) : null;
-  const transfer = closeupPayload ? [referencePayload.data, closeupPayload.data] : [referencePayload.data];
+  const glarePayload = closeup?.glare ? toTransfer(closeup.glare) : null;
+  const transfer = [referencePayload.data];
+  if (closeupPayload) transfer.push(closeupPayload.data);
+  if (glarePayload) transfer.push(glarePayload.data);
   try {
     const response = await send(
       {
@@ -238,6 +241,7 @@ export async function refine({ reference, closeup, options, rotation }: RefineRe
         reference: referencePayload,
         closeup: closeupPayload,
         quad: closeup ? closeup.quad : null,
+        glare: glarePayload,
         options,
         rotation,
       },

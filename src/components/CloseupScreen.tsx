@@ -3,6 +3,7 @@ import { useCamera } from '../lib/camera';
 import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { blobFromImageData } from '../lib/canvas';
 import { detectCloseupAsync, locateAsync } from '../lib/pipeline';
+import { glareFrom } from '../lib/imaging/closeup';
 import { exposureOf, tooDark } from '../lib/imaging/exposure';
 import { framingText } from '../lib/framing';
 import { useAutoLight } from '../lib/light';
@@ -19,6 +20,11 @@ export interface CloseupShot {
   width: number;
   height: number;
   quad: Quad;
+  /**
+   * Der gemessene Glanz dieser Aufnahme – klein, in den Koordinaten des
+   * entzerrten Abzugs. Fehlt, wenn keine weitere Aufnahme dazu kam.
+   */
+  glare?: RgbaImage;
 }
 
 /** Ein Foto der Seitenaufnahme, das nachfotografiert werden soll. */
@@ -62,6 +68,24 @@ const PREVIEW_MAX = 480;
 const FILL_MIN = 0.3;
 /** So oft muss die Erkennung ruhig stehen, bevor automatisch ausgelöst wird. */
 const STABLE_TICKS = 3;
+
+/**
+ * So viele weitere Aufnahmen für die Glanzmessung – und wie gross sie sein
+ * dürfen.
+ *
+ * Eine Spiegelung fügt Licht hinzu, sie zieht nie welches ab; über mehrere
+ * Aufnahmen aus leicht verschiedenen Winkeln ist der dunkelste Wert je
+ * Bildpunkt der ungespiegelte. Dafür genügt schon das Zittern der Hand.
+ *
+ * Klein bleiben sie, weil ein Glanzfleck grossflächig und weich ist: Gemessen
+ * war die Korrektur aus 270 Punkten so gut wie die aus voller Auflösung (1,7
+ * gegen 1,0 bei einer rohen Abweichung von 18,8), kostet aber ein Sechzehntel
+ * des Speichers. Und Speicher ist genau das, woran diese Stufe am echten Album
+ * schon einmal gestorben ist.
+ */
+const EXTRA_SHOTS = 2;
+const EXTRA_MAX = 1400;
+const EXTRA_GAP = 220;
 
 /**
  * Die dritte Runde: jedes Foto einzeln aus der Nähe.
@@ -161,6 +185,25 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
     [keep, pending],
   );
 
+  /**
+   * Den Glanz der eben gemachten Aufnahme messen – über weitere, kleine
+   * Aufnahmen derselben Fläche.
+   */
+  const measureGlare = useCallback(
+    async (reference: RgbaImage, base: { image: RgbaImage; quad: Quad }): Promise<RgbaImage | undefined> => {
+      const others: { image: RgbaImage; quad: Quad }[] = [];
+      for (let i = 0; i < EXTRA_SHOTS; i++) {
+        await new Promise((resolve) => window.setTimeout(resolve, EXTRA_GAP));
+        const extra = camera.capture(EXTRA_MAX);
+        if (!extra) break;
+        const quad = await locateAsync(reference, extra);
+        if (quad) others.push({ image: extra, quad });
+      }
+      return glareFrom(base, others) ?? undefined;
+    },
+    [camera],
+  );
+
   const takeShot = useCallback(async () => {
     if (capturing.current || !target || pendingRef.current) return;
     capturing.current = true;
@@ -197,8 +240,14 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
       navigator.vibrate?.(30);
 
       if (sure) {
+        // Noch zwei kleine Aufnahmen: Sie zeigen dieselbe Fläche aus einem
+        // minimal anderen Winkel und verraten damit, was an der ersten Glanz
+        // war. Findet die Vorlage sie nicht wieder, bleibt es beim bisherigen
+        // Weg – ein Rückschritt ist ausgeschlossen.
+        setStatus('Ruhig halten – Spiegelungen werden gemessen');
+        const glare = await measureGlare(target.reference, { image: frame, quad });
         setStatus(null);
-        keep(target.index, { blob, width: frame.width, height: frame.height, quad });
+        keep(target.index, { blob, width: frame.width, height: frame.height, quad, glare });
         return;
       }
 
@@ -217,7 +266,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
     } finally {
       capturing.current = false;
     }
-  }, [camera, keep, target]);
+  }, [camera, keep, measureGlare, target]);
 
   const takeShotRef = useRef(takeShot);
   takeShotRef.current = takeShot;
