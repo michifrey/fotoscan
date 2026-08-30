@@ -197,8 +197,21 @@ export function detectPage(img: RgbaImage, options: DetectOptions = {}): Quad | 
   // Näherung auf vier Ecken schneidet an einer Rundung schon einmal etwas ab,
   // und was hier fehlt, fehlt einem Foto am Seitenrand. Ein wenig Umgebung im
   // entzerrten Bild stört dagegen niemanden.
+  //
+  // Ins Bild geholt wird sie trotzdem: Jenseits des Randes steht nichts, was
+  // sich entzerren liesse – und in der Oberfläche wäre eine Ecke ausserhalb
+  // nicht zu greifen. Wer die Seite formatfüllend aufnimmt, bekäme sonst ein
+  // Viereck, an dem er nichts mehr richten kann.
   const margin = Math.min(small.width, small.height) * PAGE_MARGIN;
-  return scaleQuad(insetQuad(best, -margin), scale);
+  return clampToImage(scaleQuad(insetQuad(best, -margin), scale), img.width, img.height);
+}
+
+/** Jede Ecke ins Bild holen. */
+function clampToImage(quad: Quad, width: number, height: number): Quad {
+  return quad.map((p) => ({
+    x: Math.max(0, Math.min(width - 1, p.x)),
+    y: Math.max(0, Math.min(height - 1, p.y)),
+  })) as Quad;
 }
 
 /**

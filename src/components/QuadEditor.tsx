@@ -21,6 +21,17 @@ interface Props {
   onAddAt?: (point: Pt) => void;
   /** Nummern in die Ecken schreiben – die gemeinsame Sprache der beiden Stufen. */
   numbered?: boolean;
+  /**
+   * Jeder Tipp irgendwo im Bild meldet seine Stelle. Damit werden die Ecken
+   * *gesetzt* statt gezogen – vier Tipps, und das Viereck steht.
+   *
+   * Solange das an ist, geht nichts anderes: keine Ecken ziehen, keine Häkchen.
+   * Das ist Absicht – ein halb gesetztes Viereck nebenbei zu verschieben
+   * stiftet nur Verwirrung.
+   */
+  onTap?: (point: Pt) => void;
+  /** Welche Ecke gerade gesetzt wird; sie wird hervorgehoben. */
+  awaiting?: number;
 }
 
 const CORNER_LABELS = ['oben links', 'oben rechts', 'unten rechts', 'unten links'];
@@ -41,6 +52,8 @@ export function QuadEditor({
   onChange,
   onAddAt,
   numbered,
+  onTap,
+  awaiting,
 }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragging = useRef<{ quad: number; corner: number } | null>(null);
@@ -89,7 +102,7 @@ export function QuadEditor({
     >
       {/* Der Untergrund fängt Tipps neben den Vierecken auf. Er liegt zuunterst,
           damit ein Tipp auf ein Viereck weiterhin dieses meint. */}
-      {onAddAt && (
+      {onAddAt && !onTap && (
         <rect
           x={0}
           y={0}
@@ -146,6 +159,18 @@ export function QuadEditor({
                 />
               ))}
 
+            {awaiting !== undefined && quad[awaiting] && (
+              <circle
+                cx={quad[awaiting].x}
+                cy={quad[awaiting].y}
+                r={handleRadius * 1.7}
+                fill="none"
+                stroke="#fbbf24"
+                strokeWidth={handleRadius * 0.3}
+                className="animate-pulse"
+              />
+            )}
+
             {numbered && (
               <text
                 x={quad[0].x + (cx - quad[0].x) * 0.22}
@@ -198,6 +223,20 @@ export function QuadEditor({
           </g>
         );
       })}
+
+      {/* Zuoberst, damit jeder Tipp hier landet – auch über einem Viereck. */}
+      {onTap && (
+        <rect
+          x={0}
+          y={0}
+          width={width}
+          height={height}
+          fill="transparent"
+          data-testid="ecken-tippen"
+          className="cursor-crosshair"
+          onPointerDown={(event) => onTap(toImage(event.clientX, event.clientY))}
+        />
+      )}
     </svg>
   );
 }
