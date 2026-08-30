@@ -13,6 +13,14 @@ interface Props {
   /** Foto zum Bearbeiten der Ecken aktiv setzen. */
   onActivate?: (index: number) => void;
   onChange?: (index: number, quad: Quad) => void;
+  /**
+   * Ein Tipp auf freie Fläche. Damit holt der Nutzer ein Foto herein, das die
+   * Erkennung übersehen hat – ohne diesen Weg bliebe es verloren, und
+   * ausgerechnet die blassen, alten Abzüge sind die, die sie übersieht.
+   */
+  onAddAt?: (point: Pt) => void;
+  /** Nummern in die Ecken schreiben – die gemeinsame Sprache der beiden Stufen. */
+  numbered?: boolean;
 }
 
 const CORNER_LABELS = ['oben links', 'oben rechts', 'unten rechts', 'unten links'];
@@ -22,7 +30,18 @@ const CORNER_LABELS = ['oben links', 'oben rechts', 'unten rechts', 'unten links
  * Foto aus der Auswahl heraus; ein Tipp daneben macht es zum aktiven Foto,
  * dessen vier Ecken sich ziehen lassen.
  */
-export function QuadEditor({ width, height, quads, selected, editing, onToggle, onActivate, onChange }: Props) {
+export function QuadEditor({
+  width,
+  height,
+  quads,
+  selected,
+  editing,
+  onToggle,
+  onActivate,
+  onChange,
+  onAddAt,
+  numbered,
+}: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragging = useRef<{ quad: number; corner: number } | null>(null);
 
@@ -68,6 +87,21 @@ export function QuadEditor({ width, height, quads, selected, editing, onToggle, 
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
     >
+      {/* Der Untergrund fängt Tipps neben den Vierecken auf. Er liegt zuunterst,
+          damit ein Tipp auf ein Viereck weiterhin dieses meint. */}
+      {onAddAt && (
+        <rect
+          x={0}
+          y={0}
+          width={width}
+          height={height}
+          fill="transparent"
+          data-testid="freie-flaeche"
+          className="cursor-crosshair"
+          onPointerDown={(event) => onAddAt(toImage(event.clientX, event.clientY))}
+        />
+      )}
+
       {quads.map((quad, index) => {
         const isSelected = selected.includes(index);
         const isEditing = editing === index;
@@ -111,6 +145,21 @@ export function QuadEditor({ width, height, quads, selected, editing, onToggle, 
                   }}
                 />
               ))}
+
+            {numbered && (
+              <text
+                x={quad[0].x + (cx - quad[0].x) * 0.22}
+                y={quad[0].y + (cy - quad[0].y) * 0.22}
+                fill={isSelected ? '#fbbf24' : 'rgba(255,255,255,0.6)'}
+                fontSize={badge * 1.5}
+                fontWeight="600"
+                dominantBaseline="hanging"
+                data-testid={`nummer-${index}`}
+                className="pointer-events-none select-none"
+              >
+                {index + 1}
+              </text>
+            )}
 
             {onToggle && (
               <g

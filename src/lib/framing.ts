@@ -4,9 +4,9 @@ import type { Quad } from './imaging/types';
 
 /**
  * Beurteilt, was der Sucher gerade zeigt. Die automatische Auslösung braucht
- * mehr als „irgendetwas erkannt": Ein Foto, das am Bildrand abgeschnitten ist,
- * wird auch abgeschnitten gespeichert, und ein wanderndes Viereck heisst, dass
- * die Kamera noch nicht ruhig liegt.
+ * mehr als „irgendetwas erkannt": Eine Seite, die am Bildrand abgeschnitten
+ * ist, wird auch abgeschnitten gespeichert, und ein wanderndes Viereck heisst,
+ * dass die Kamera noch nicht ruhig liegt.
  *
  * Vor allem aber soll die App sagen, woran es liegt. Ein Sucher, der bloss
  * nichts tut, lässt einen raten.
@@ -31,19 +31,26 @@ export function framing(
   return steady ? 'bereit' : 'unruhig';
 }
 
-/** Was im Sucher steht. */
-export function framingText(state: Framing, count: number, light: Light): string {
+/**
+ * Was im Sucher steht.
+ *
+ * Gesucht wird die **Seite**, nicht die einzelnen Fotos: Welche Fotos darauf
+ * liegen, wird im nächsten Schritt auf der entzerrten Seite entschieden, und
+ * dort darf der Nutzer widersprechen. Der Sucher hat nur eine Frage zu
+ * beantworten – liegt die Seite ganz und ruhig im Bild?
+ */
+export function framingText(state: Framing, light: Light): string {
   switch (state) {
     case 'dunkel':
       return darkText(light);
     case 'leer':
-      return 'Kein Foto erkannt – Seite ganz ins Bild nehmen';
+      return 'Keine Albumseite erkannt – Seite ganz ins Bild nehmen';
     case 'rand':
-      return 'Etwas weiter weg – ein Foto reicht bis an den Bildrand';
+      return 'Etwas weiter weg – die Seite reicht bis an den Bildrand';
     case 'unruhig':
-      return `${count} ${count === 1 ? 'Foto' : 'Fotos'} erkannt – Kamera ruhig halten`;
+      return 'Seite erkannt – Kamera ruhig halten';
     case 'bereit':
-      return `${count} ${count === 1 ? 'Foto' : 'Fotos'} erkannt`;
+      return 'Seite erkannt';
   }
 }
 

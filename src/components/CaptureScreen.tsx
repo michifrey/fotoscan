@@ -2,13 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCamera, wait } from '../lib/camera';
 import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { orientationSupported, requestOrientationAccess, useTilt } from '../lib/orientation';
-import { blobFromImageData, imageDataFromBlob } from '../lib/canvas';
+import { imageDataFromBlob } from '../lib/canvas';
 import { framing, framingText } from '../lib/framing';
 import type { Framing } from '../lib/framing';
 import { exposureOf } from '../lib/imaging/exposure';
 import { useAutoLight } from '../lib/light';
-import { detect } from '../lib/pipeline';
-import { defaultQuad } from '../lib/imaging/detect';
+import { detectPageAsync } from '../lib/pipeline';
 import { inView, makeSubject, regionOf, trackSubject } from '../lib/imaging/track';
 import type { Region, Subject } from '../lib/imaging/track';
 import type { Quad } from '../lib/imaging/types';
@@ -16,27 +15,18 @@ import { BackIcon, Button, IconButton } from './ui';
 import { QuadEditor } from './QuadEditor';
 import { CAPTURE_RADIUS, GuidedCapture, TARGETS, distanceToTarget } from './GuidedCapture';
 import { CameraSettings, GearIcon } from './CameraSettings';
-import { SheetScanScreen } from './SheetScanScreen';
-import type { SweepTile } from './SheetScanScreen';
 
+/**
+ * Die erste Stufe: eine Aufnahme der ganzen Albumseite, dazu ihr Viereck.
+ *
+ * Welche Fotos darauf liegen, steht hier bewusst **nicht**. Das wird im
+ * nächsten Schritt auf der entzerrten Seite entschieden – dort, wo der Nutzer
+ * widersprechen kann.
+ */
 export interface Shot {
   frames: ImageData[];
-  quads: Quad[];
-  /**
-   * Die Kacheln eines Blatt-Scans: Nahaufnahmen der Seite mit ihrer Lage
-   * darauf. Aus ihnen werden die Fotos später zusammengesetzt.
-   */
-  sweep?: SweepTile[];
-}
-
-/** Wie eine Seite aufgenommen wird. */
-type Mode = 'entspiegeln' | 'einzel' | 'blatt';
-
-/** Die Übersicht, an der ein laufender Blatt-Scan hängt. */
-interface Sheet {
-  overview: ImageData;
-  url: string;
-  quads: Quad[];
+  /** Wo die Seite in der Aufnahme liegt, oder `null`, wenn sie das Bild füllt. */
+  page: Quad | null;
 }
 
 interface Props {
@@ -68,14 +58,10 @@ interface GuidedState {
 export function CaptureScreen({ albumName, onShot, onBack }: Props) {
   const [deviceId, setDeviceId] = useState<string | null>(() => rememberedCamera());
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [sheet, setSheet] = useState<Sheet | null>(null);
-  // Beim Blatt-Scan gibt der Sucher die Kamera ab: Zwei offene Ströme auf
-  // dasselbe Objektiv verträgt nicht jedes Telefon.
-  const camera = useCamera(sheet === null, deviceId);
-  const [quads, setQuads] = useState<Quad[]>([]);
+  const camera = useCamera(true, deviceId);
+  const [page, setPage] = useState<Quad | null>(null);
   const [view, setView] = useState<Framing>('leer');
-  const [mode, setMode] = useState<Mode>('entspiegeln');
-  const destack = mode === 'entspiegeln';
+  const [destack, setDestack] = useState(true);
   const [auto, setAuto] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [aspect, setAspect] = useState(3 / 4);
@@ -99,8 +85,8 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
   // Aufnahmereihe und die Vorschau verfolgt es, statt neu zu suchen.
   const subject = useRef<Subject | null>(null);
   const held = useRef(false);
-  const quadsRef = useRef<Quad[]>([]);
-  quadsRef.current = quads;
+  const pageRef = useRef<Quad | null>(null);
+  pageRef.current = page;
 
   /** Aufnahmereihe beenden: nichts mehr verfolgen. */
   const stopFollowing = useCallback(() => {
@@ -135,7 +121,8 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
    * Fläche –, bleibt es beim bisherigen Verhalten ohne Verfolgung.
    */
   const follow = useCallback((base: ImageData) => {
-    const box = regionOf(quadsRef.current, previewSize.current.width, previewSize.current.height);
+    const found = pageRef.current;
+    const box = regionOf(found ? [found] : [], previewSize.current.width, previewSize.current.height);
     subject.current = makeSubject(base, box);
     held.current = subject.current !== null;
     setFollowing(subject.current !== null);
@@ -154,7 +141,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     return held.current;
   }, []);
 
-  /** Aufnahmereihe abschliessen: Fotos suchen und zur Prüfung weiterreichen. */
+  /** Aufnahmereihe abschliessen: die Seite suchen und weiterreichen. */
   const finish = useCallback(
     async (frames: ImageData[]) => {
       setGuided(null);
@@ -163,19 +150,17 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
         capturing.current = false;
         return;
       }
-      setStatus('Fotos werden gesucht …');
+      setStatus('Seite wird vermessen …');
       try {
-        const found = await detect(frames[0]);
-        onShot({
-          frames,
-          quads: found.length > 0 ? found : [defaultQuad(frames[0].width, frames[0].height)],
-        });
+        // Auf der vollen Aufnahme, nicht auf der Vorschau: Von diesem Viereck
+        // hängt ab, wie gerade die Seite hinterher steht.
+        onShot({ frames, page: await detectPageAsync(frames[0]) });
       } finally {
         setStatus(null);
         capturing.current = false;
       }
     },
-    [onShot, stopFollowing],
+    [onShot],
   );
 
   /**
@@ -210,32 +195,13 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     lastCapture.current = Date.now();
     stableCount.current = 0;
 
-    const base = camera.capture(mode === 'einzel' ? SINGLE_MAX : STACK_MAX);
+    const base = camera.capture(destack ? STACK_MAX : SINGLE_MAX);
     if (!base) {
       capturing.current = false;
       return;
     }
-    if (mode === 'einzel') {
+    if (!destack) {
       await finish([base]);
-      return;
-    }
-    if (mode === 'blatt') {
-      // Die Übersicht steht: Sie ist der Bezugsrahmen, in dem die Kacheln
-      // später ihren Platz finden, und die Karte, auf der zu sehen ist, was
-      // noch fehlt.
-      setStatus('Fotos werden gesucht …');
-      try {
-        const found = await detect(base);
-        const url = URL.createObjectURL(await blobFromImageData(base, 0.85));
-        setSheet({
-          overview: base,
-          url,
-          quads: found.length > 0 ? found : [defaultQuad(base.width, base.height)],
-        });
-      } finally {
-        setStatus(null);
-        capturing.current = false;
-      }
       return;
     }
 
@@ -252,7 +218,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     }
     resetTilt();
     setGuided({ frames: [base], done: TARGETS.map(() => false) });
-  }, [camera, finish, follow, mode, resetTilt, runTimedSeries]);
+  }, [camera, destack, finish, follow, resetTilt, runTimedSeries]);
 
   const takeShotRef = useRef(takeShot);
   takeShotRef.current = takeShot;
@@ -335,10 +301,12 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
           if (frame) {
             previewSize.current = { width: frame.width, height: frame.height };
             setAspect(frame.width / frame.height);
-            const found = await detect(frame, 420);
+            const found = await detectPageAsync(frame, 420);
             if (active) {
-              setQuads((previous) => {
-                if (isStable(previous, found, Math.max(frame.width, frame.height) * 0.02)) {
+              const list = found ? [found] : [];
+              setPage((previous) => {
+                const before = previous ? [previous] : [];
+                if (isStable(before, list, Math.max(frame.width, frame.height) * 0.02)) {
                   stableCount.current += 1;
                 } else {
                   stableCount.current = 0;
@@ -346,12 +314,12 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
                 return found;
               });
 
-              // Gemessen wird dort, wo das Motiv liegt: Eine helle Tischplatte
+              // Gemessen wird dort, wo die Seite liegt: Eine helle Tischplatte
               // ringsum sagt nichts darüber, wie hell die Seite ist.
-              const exposure = exposureOf(frame, regionOf(found, frame.width, frame.height));
+              const exposure = exposureOf(frame, regionOf(list, frame.width, frame.height));
               measure(exposure);
 
-              const state = framing(found, frame.width, frame.height, stableCount.current >= 3, exposure);
+              const state = framing(list, frame.width, frame.height, stableCount.current >= 3, exposure);
               setView(state);
               if (autoRef.current && state === 'bereit' && Date.now() - lastCapture.current > 2500) {
                 void takeShotRef.current();
@@ -378,8 +346,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
       setStatus('Bild wird geladen …');
       try {
         const image = await imageDataFromBlob(file, SINGLE_MAX);
-        const found = await detect(image);
-        onShot({ frames: [image], quads: found.length > 0 ? found : [defaultQuad(image.width, image.height)] });
+        onShot({ frames: [image], page: await detectPageAsync(image) });
       } catch {
         setStatus('Diese Datei konnte nicht geöffnet werden.');
         await wait(2500);
@@ -389,46 +356,6 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
     },
     [onShot, stopFollowing],
   );
-
-  // Die Übergabe an den Blatt-Sucher braucht einen Takt Aufschub: Erst muss
-  // der eigene Kamerastrom wirklich freigegeben sein, sonst öffnen zwei Sucher
-  // gleichzeitig dasselbe Objektiv – das verträgt nicht jedes Telefon.
-  const [handover, setHandover] = useState(false);
-  useEffect(() => {
-    if (!sheet) {
-      setHandover(false);
-      return;
-    }
-    const handle = window.setTimeout(() => setHandover(true), 0);
-    return () => window.clearTimeout(handle);
-  }, [sheet]);
-
-  const closeSheet = useCallback(() => {
-    setSheet((current) => {
-      if (current) URL.revokeObjectURL(current.url);
-      return null;
-    });
-    capturing.current = false;
-    lastCapture.current = Date.now();
-  }, []);
-
-  if (sheet) {
-    return handover ? (
-      <SheetScanScreen
-        overview={sheet.overview}
-        overviewUrl={sheet.url}
-        quads={sheet.quads}
-        onCancel={closeSheet}
-        onDone={(tiles) => {
-          const { overview, quads: found } = sheet;
-          closeSheet();
-          onShot({ frames: [overview], quads: found, sweep: tiles.length > 0 ? tiles : undefined });
-        }}
-      />
-    ) : (
-      <div className="min-h-dvh bg-black" />
-    );
-  }
 
   return (
     <div className="flex min-h-dvh flex-col bg-black text-stone-100">
@@ -448,12 +375,12 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
           {/* Während einer Aufnahmereihe wird nicht mehr erkannt, sondern
               verfolgt. Ein stehengebliebener Zuschnitt wäre dann genau das,
               was er nicht sein soll: eine Linie, die am Bildschirm klebt. */}
-          {!following && (
+          {!following && page && (
             <QuadEditor
               width={previewSize.current.width}
               height={previewSize.current.height}
-              quads={quads}
-              selected={quads.map((_, i) => i)}
+              quads={[page]}
+              selected={[0]}
               editing={null}
             />
           )}
@@ -504,7 +431,7 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
                 !status && view !== 'bereit' ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
               }`}
             >
-              {status ?? framingText(view, quads.length, light)}
+              {status ?? framingText(view, light)}
             </span>
           </p>
         )}
@@ -550,13 +477,10 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
 
       <div className="shrink-0 space-y-4 border-t border-white/10 bg-stone-950 px-4 pt-3 pb-6">
         <div className="flex justify-center gap-2 text-xs">
-          <Chip active={mode === 'entspiegeln'} onClick={() => setMode('entspiegeln')}>
+          <Chip active={destack} onClick={() => setDestack(true)}>
             Entspiegeln
           </Chip>
-          <Chip active={mode === 'blatt'} onClick={() => setMode('blatt')} testId="modus-blatt">
-            Blatt
-          </Chip>
-          <Chip active={mode === 'einzel'} onClick={() => setMode('einzel')}>
+          <Chip active={!destack} onClick={() => setDestack(false)}>
             Einzelbild
           </Chip>
           <Chip active={auto} onClick={() => setAuto(!auto)}>
@@ -592,40 +516,23 @@ export function CaptureScreen({ albumName, onShot, onBack }: Props) {
           />
 
           <div className="flex w-11 justify-center text-[11px] text-stone-500">
-            {mode === 'entspiegeln' ? `${TARGETS.length + 1}×` : mode === 'blatt' ? 'Blatt' : '1×'}
+            {destack ? `${TARGETS.length + 1}×` : '1×'}
           </div>
         </div>
 
         <p className="text-center text-[11px] leading-relaxed text-stone-500">
-          {mode === 'entspiegeln'
-            ? 'Nach dem Auslösen vier Punkte anfahren, das Album dabei im Bild behalten. Die Spiegelung liegt dann in jeder Aufnahme woanders und wird herausgerechnet.'
-            : mode === 'blatt'
-              ? 'Erst die ganze Seite aufnehmen, dann das Telefon flach darüber führen und näher herangehen. Aus den Kacheln entsteht ein scharfer Blatt-Scan.'
-              : 'Eine einzelne Aufnahme, ohne Entspiegelung.'}
+          {destack
+            ? 'Die ganze Seite ins Bild nehmen. Nach dem Auslösen vier Punkte anfahren, das Album dabei im Bild behalten – die Spiegelung liegt dann in jeder Aufnahme woanders und wird herausgerechnet. Die einzelnen Fotos werden danach ausgewählt.'
+            : 'Eine einzelne Aufnahme der Seite, ohne Entspiegelung.'}
         </p>
       </div>
     </div>
   );
 }
 
-function Chip({
-  active,
-  onClick,
-  testId,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  testId?: string;
-  children: React.ReactNode;
-}) {
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <Button
-      variant={active ? 'primary' : 'ghost'}
-      onClick={onClick}
-      data-testid={testId}
-      className="rounded-full px-3 py-1.5 text-xs"
-    >
+    <Button variant={active ? 'primary' : 'ghost'} onClick={onClick} className="rounded-full px-3 py-1.5 text-xs">
       {children}
     </Button>
   );

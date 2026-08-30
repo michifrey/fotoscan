@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCamera } from '../lib/camera';
 import { preferred, rememberCamera, rememberedCamera } from '../lib/lenses';
 import { blobFromImageData } from '../lib/canvas';
-import { detect } from '../lib/pipeline';
+import { detect, locateAsync } from '../lib/pipeline';
 import { exposureOf, tooDark } from '../lib/imaging/exposure';
 import { framingText } from '../lib/framing';
 import { useAutoLight } from '../lib/light';
 import { polygonArea } from '../lib/imaging/geometry';
-import type { Quad } from '../lib/imaging/types';
+import type { Quad, RgbaImage } from '../lib/imaging/types';
 import { BackIcon, Button, IconButton } from './ui';
 import { QuadEditor } from './QuadEditor';
 import { CameraSettings, GearIcon } from './CameraSettings';
@@ -23,10 +23,16 @@ export interface CloseupShot {
 
 /** Ein Foto der Seitenaufnahme, das nachfotografiert werden soll. */
 export interface CloseupTarget {
-  /** Stelle in der Liste der erkannten Fotos. */
+  /** Stelle in der Liste der erkannten Fotos – zugleich seine Nummer. */
   index: number;
   /** Kleine Vorschau, damit klar ist, welches Foto gemeint ist. */
   url: string;
+  /**
+   * Dasselbe Foto, wie es aus der Seitenaufnahme geschnitten wurde. Damit wird
+   * es im Nahbild wiedergefunden – verlässlicher, als das grösste erkannte
+   * Viereck dafür zu halten.
+   */
+  reference: RgbaImage;
 }
 
 interface Props {
@@ -108,12 +114,18 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
     try {
       const frame = camera.capture(CLOSE_MAX);
       if (!frame) return;
-      const found = await detect(frame);
-      // Das grösste Viereck ist das Foto; alles andere sind Nachbarn, die am
-      // Rand mit ins Bild ragen.
-      const quad = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a))[0];
+
+      // Zuerst über die Seitenaufnahme: Sie zeigt dieses Foto bereits und weiss
+      // damit, wie es aussieht. Das ist der verlässlichere Weg – die
+      // Kantensuche im Nahbild trifft auch einmal daneben, und dann wird mitten
+      // durchs Motiv geschnitten, ohne dass jemand es merkt.
+      let quad = await locateAsync(target.reference, frame);
+      if (!quad) {
+        const found = await detect(frame);
+        quad = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a))[0] ?? null;
+      }
       if (!quad || polygonArea(quad) < frame.width * frame.height * FILL_MIN) {
-        setHint('Kein formatfüllendes Foto erkannt – näher herangehen.');
+        setHint('Dieses Foto ist nicht formatfüllend im Bild – näher herangehen.');
         navigator.vibrate?.([20, 60, 20]);
         return;
       }
@@ -235,7 +247,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
             <BackIcon />
           </IconButton>
           <span className="rounded-full bg-black/50 px-3 py-1.5 text-xs backdrop-blur">
-            Nahaufnahme {position + 1} von {targets.length}
+            Foto {target.index + 1} · {position + 1} von {targets.length}
           </span>
           <span className="flex gap-2">
             {camera.torchAvailable && (
@@ -265,7 +277,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
                 !status && dark ? 'bg-amber-500/85 text-stone-950' : 'bg-black/60'
               }`}
             >
-              {status ?? (dark ? framingText('dunkel', 0, light) : (hint ?? 'Foto erkannt – ruhig halten'))}
+              {status ?? (dark ? framingText('dunkel', light) : (hint ?? 'Foto erkannt – ruhig halten'))}
             </span>
           )}
         </div>
@@ -296,7 +308,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
         <div className="flex items-center justify-between gap-4">
           <img
             src={target.url}
-            alt={`Foto ${position + 1}`}
+            alt={`Foto ${target.index + 1}`}
             className="size-16 shrink-0 rounded-md object-cover ring-1 ring-white/20"
           />
 

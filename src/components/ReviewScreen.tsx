@@ -2,14 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { blobFromImageData, imageDataFromBlob, toImageData } from '../lib/canvas';
 import { enhance } from '../lib/imaging/enhance';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
-import { outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
+import { applyHomography, computeHomography, outputSize, rotate, warpPerspective } from '../lib/imaging/warp';
 import { cropWriting, findWriting } from '../lib/imaging/writing';
 import { scaleQuad } from '../lib/imaging/geometry';
-import type { Quad } from '../lib/imaging/types';
+import type { Pt, Quad, RgbaImage } from '../lib/imaging/types';
 import { hasGlare } from '../lib/imaging/glare';
-import { composeFromTiles } from '../lib/imaging/mosaic';
-import type { LazyTile } from '../lib/imaging/mosaic';
-import { mergePhotosAsync, refine } from '../lib/pipeline';
+import { defaultQuad } from '../lib/imaging/detect';
+import { detectAtAsync, detectPhotosAsync, mergePhotosAsync, refine } from '../lib/pipeline';
 import type { Closeup } from '../lib/imaging/closeup';
 import type { Shot } from './CaptureScreen';
 import { CloseupScreen } from './CloseupScreen';
@@ -38,43 +37,54 @@ interface Props {
   onAccept: (photos: ExtractedPhoto[], page: PageImage | null) => Promise<void>;
 }
 
+/**
+ * Die zweite Stufe: erst die Seite geraderücken, dann die Fotos darauf wählen.
+ *
+ * Die Trennung ist der ganze Punkt. Vorher entschied die Erkennung in einem Zug
+ * beides – wo die Seite ist und welche Fotos darauf liegen – und wenn sie sich
+ * bei der zweiten Frage irrte, kam die ganze Seite als ein Foto heraus, ohne
+ * dass jemand widersprechen konnte.
+ *
+ * Jetzt fragt die App zweimal, und beide Antworten sind zu ändern:
+ *
+ * 1. **Seite.** Ihr Viereck steht über der Aufnahme; die vier Ecken lassen sich
+ *    ziehen. „Weiter" entzerrt sie.
+ * 2. **Fotos.** Auf der geraden Seite wird gesucht und durchnummeriert. Ecken
+ *    ziehen, Falsches abwählen – und was übersehen wurde, mit einem Tipp
+ *    daraufholen.
+ */
+
 const PREVIEW_MAX = 420;
 
+/** Längste Kante, auf die die Seite entzerrt wird. */
+const PAGE_MAX = 2200;
+
+/** Kantenlänge eines von Hand gesetzten Vierecks, als Anteil der Seitenbreite. */
+const HAND_SIZE = 0.22;
+
+type Step = 'seite' | 'fotos';
+
 export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
-  const [quads, setQuads] = useState<Quad[]>(shot.quads);
-  const [selected, setSelected] = useState<number[]>(shot.quads.map((_, i) => i));
-  const [editing, setEditing] = useState<number | null>(shot.quads.length > 0 ? 0 : null);
+  const frame = shot.frames[0];
+
+  const [step, setStep] = useState<Step>('seite');
+  const [pageQuad, setPageQuad] = useState<Quad>(() => shot.page ?? fullQuad(frame.width, frame.height));
+  const [quads, setQuads] = useState<Quad[]>([]);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [editing, setEditing] = useState<number | null>(null);
   const [rotation, setRotation] = useState(0);
   const [options, setOptions] = useState<EnhanceOptions>({ levels: true, whiteBalance: true, sharpen: true });
   const [showDetails, setShowDetails] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
-  const [closeups, setCloseups] = useState<Map<number, CloseupShot>>(() => new Map());
+  const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [targets, setTargets] = useState<CloseupTarget[] | null>(null);
   /** Fotos, auf denen auch nach dem Verrechnen noch eine Spiegelung liegt. */
   const [glare, setGlare] = useState<number[]>([]);
 
-  const frame = shot.frames[0];
   const previewCanvas = useRef<HTMLCanvasElement | null>(null);
-
-  /**
-   * Die Kacheln eines Blatt-Scans, noch nicht ausgepackt.
-   *
-   * Ein Dutzend Aufnahmen in voller Grösse gleichzeitig im Speicher sprengt
-   * ein Telefon – dieselbe Disziplin wie bei den Nahaufnahmen. Geladen wird
-   * je Foto nur, was es überhaupt berührt, und eine Kachel nach der anderen.
-   */
-  const sweep = useMemo<LazyTile[]>(
-    () =>
-      (shot.sweep ?? []).map((tile) => ({
-        width: tile.width,
-        height: tile.height,
-        pose: tile.pose,
-        load: () => imageDataFromBlob(tile.blob, Math.max(tile.width, tile.height)),
-      })),
-    [shot.sweep],
-  );
 
   // Verkleinerte Kopien der Aufnahmen – für die Vorschau, damit das Nachführen
   // beim Ziehen der Ecken flüssig bleibt, und für die Prüfung auf
@@ -100,27 +110,20 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   }, [frame, shot.frames]);
 
   /**
-   * Bleibt nach dem Verrechnen Glanz übrig?
-   *
-   * Gerechnet wird auf den verkleinerten Aufnahmen und mit dem zuerst
-   * erkannten Zuschnitt – einmal, im Hintergrund. Es geht um das Licht im
-   * Raum, nicht um den Zuschnitt auf den Bildpunkt genau, und der Hinweis
-   * soll da sein, bevor gespeichert wird: Solange die Seite noch aufgeschlagen
-   * daliegt, kostet eine zweite Aufnahme nichts.
+   * Die entzerrte Seite. Auf ihr wird gesucht, gezeigt und getippt – die
+   * Fotovierecke leben in ihren Koordinaten.
    */
-  useEffect(() => {
-    let cancelled = false;
-    const quadsForCheck = shot.quads.map((quad) => scaleQuad(quad, small.scale));
-    void mergePhotosAsync({ frames: small.images, quads: quadsForCheck })
-      .then((merged) => {
-        if (cancelled) return;
-        setGlare(merged.flatMap((image, index) => (image && hasGlare(image) ? [index] : [])));
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [shot.quads, small]);
+  const page = useMemo<RgbaImage | null>(() => {
+    if (step !== 'fotos') return null;
+    const size = outputSize(pageQuad, PAGE_MAX);
+    return warpPerspective(frame, pageQuad, size.width, size.height);
+  }, [frame, pageQuad, step]);
+
+  /** Von der geraden Seite zurück in die Aufnahme – für alles Weitere. */
+  const toFrame = useMemo(
+    () => (page ? computeHomography(fullQuad(page.width, page.height), pageQuad) : null),
+    [page, pageQuad],
+  );
 
   useEffect(() => {
     let url: string | null = null;
@@ -133,26 +136,89 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
     };
   }, [small]);
 
+  // Die gerade Seite als Bild für die Anzeige.
+  useEffect(() => {
+    if (!page) return;
+    let url: string | null = null;
+    let dropped = false;
+    void blobFromImageData(page, 0.85).then((blob) => {
+      if (dropped) return;
+      url = URL.createObjectURL(blob);
+      setPageUrl(url);
+    });
+    return () => {
+      dropped = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [page]);
+
+  // Die Fotos auf der geraden Seite suchen, sobald sie steht.
+  useEffect(() => {
+    if (!page) return;
+    let cancelled = false;
+    setSearching(true);
+    void detectPhotosAsync(page)
+      .then((all) => {
+        if (cancelled) return;
+        // Findet die Erkennung nichts, liegt ein Viereck über der halben Seite
+        // bereit. Das ist die wahrscheinlichste Lesart – die Seite *ist* das
+        // Foto – und vor allem ist es etwas, das sich ziehen lässt. Eine leere
+        // Auswahl wäre eine Sackgasse.
+        const found = all.length > 0 ? all : [defaultQuad(page.width, page.height)];
+        setQuads(found);
+        setSelected(found.map((_, i) => i));
+        setEditing(found.length > 0 ? 0 : null);
+      })
+      .finally(() => {
+        if (!cancelled) setSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [page]);
+
+  /**
+   * Bleibt nach dem Verrechnen Glanz übrig?
+   *
+   * Gerechnet wird auf den verkleinerten Aufnahmen, einmal im Hintergrund. Es
+   * geht um das Licht im Raum, nicht um den Zuschnitt auf den Bildpunkt genau,
+   * und der Hinweis soll da sein, bevor gespeichert wird: Solange die Seite
+   * noch aufgeschlagen daliegt, kostet eine zweite Aufnahme nichts.
+   */
+  useEffect(() => {
+    if (!toFrame || quads.length === 0) return;
+    let cancelled = false;
+    const inFrame = quads.map((quad) => scaleQuad(applyHomography(toFrame, quad) as Quad, small.scale));
+    void mergePhotosAsync({ frames: small.images, quads: inFrame })
+      .then((merged) => {
+        if (cancelled) return;
+        setGlare(merged.flatMap((image, index) => (image && hasGlare(image) ? [index] : [])));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [quads, small, toFrame]);
+
   const firstSelected = selected.length > 0 ? Math.min(...selected) : null;
 
   // Vorschau des ersten ausgewählten Fotos, klein und auf dem Hauptthread.
   useEffect(() => {
     const canvas = previewCanvas.current;
-    if (!canvas || firstSelected === null) return;
+    if (!canvas || firstSelected === null || !page) return;
     const quad = quads[firstSelected];
     if (!quad) return;
 
     const handle = window.setTimeout(() => {
-      const scaled = scaleQuad(quad, small.scale);
-      const size = outputSize(scaled, PREVIEW_MAX);
-      const warped = warpPerspective(small.image, scaled, size.width, size.height);
+      const size = outputSize(quad, PREVIEW_MAX);
+      const warped = warpPerspective(page, quad, size.width, size.height);
       const result = rotate(enhance(warped, options), rotation);
       canvas.width = result.width;
       canvas.height = result.height;
       canvas.getContext('2d')?.putImageData(toImageData(result), 0, 0);
     }, 60);
     return () => window.clearTimeout(handle);
-  }, [firstSelected, quads, options, rotation, small]);
+  }, [firstSelected, options, page, quads, rotation]);
 
   const toggle = useCallback((index: number) => {
     setSelected((current) =>
@@ -160,91 +226,125 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
     );
   }, []);
 
-  const accept = useCallback(async () => {
-    if (selected.length === 0) return;
-    setSaving(true);
-    try {
-      const chosen = selected.map((index) => quads[index]).filter(Boolean);
-      // Erst die Seitenaufnahme: entzerrt und entspiegelt, aber noch ohne
-      // Nachbearbeitung – sie ist die Vorlage für die Nahaufnahmen.
-      const references = await mergePhotosAsync({ frames: shot.frames, quads: chosen });
-
-      // Die Handschrift wird auf der verkleinerten Fassung gesucht – das
-      // genügt, um sie zu finden –, ausgeschnitten aber aus der vollen
-      // Aufnahme, sonst wäre sie nicht mehr zu lesen.
-      const writings = new Map<number, { blob: Blob; width: number; height: number }>();
-      for (const entry of findWriting(small.image, chosen.map((quad) => scaleQuad(quad, small.scale)))) {
-        const box = {
-          minX: Math.round(entry.box.minX / small.scale),
-          minY: Math.round(entry.box.minY / small.scale),
-          maxX: Math.round(entry.box.maxX / small.scale),
-          maxY: Math.round(entry.box.maxY / small.scale),
-        };
-        const crop = cropWriting(frame, { box, photo: entry.photo }, Math.round(12 / small.scale), chosen);
-        writings.set(entry.photo, {
-          blob: await blobFromImageData(crop, 0.9),
-          width: crop.width,
-          height: crop.height,
-        });
-      }
-
-      const photos: ExtractedPhoto[] = [];
-      for (let i = 0; i < references.length; i++) {
-        if (references.length > 1) setProgress(`Foto ${i + 1} von ${references.length}`);
-        const near = closeups.get(selected[i]);
-        let closeup: Closeup | null = null;
-        if (!near && sweep.length > 0) {
-          // Aus dem Blatt-Scan: Die Kacheln dieses Fotos werden zu einem
-          // scharfen Abzug zusammengesetzt. Von da an ist er eine Nahaufnahme
-          // wie jede andere – die Seitenaufnahme rechnet seinen Glanz heraus,
-          // und der Rest des Weges bleibt derselbe.
-          setProgress(`Foto ${i + 1} von ${references.length} – Kacheln werden zusammengesetzt`);
-          const mosaic = await composeFromTiles(frame, chosen[i], sweep);
-          if (mosaic) {
-            closeup = { image: mosaic, quad: fullQuad(mosaic.width, mosaic.height) };
-          }
-        }
-        if (near) {
-          // Die Nahaufnahmen liegen als Bilddatei vor, nicht als Pixel: Sechs
-          // Aufnahmen in voller Grösse gleichzeitig im Speicher zu halten
-          // sprengt den Rahmen eines Telefons. Ausgepackt wird deshalb erst
-          // hier, eine nach der anderen.
-          const image = await imageDataFromBlob(near.blob, Math.max(near.width, near.height));
-          closeup = { image, quad: near.quad };
-        }
-        const image = await refine({ reference: references[i], closeup, options, rotation });
-        photos.push({
-          blob: await blobFromImageData(image, 0.92),
-          width: image.width,
-          height: image.height,
-          writing: writings.get(i),
-        });
-      }
-      // Die Übersichtsaufnahme kommt mit ins Album: Sie hält fest, wie die
-      // Fotos auf der Seite lagen und was daneben stand.
-      await onAccept(photos, {
-        blob: await blobFromImageData(small.image, 0.82),
-        width: small.image.width,
-        height: small.image.height,
+  /**
+   * Ein Tipp auf freie Fläche: Dort wird nachgesehen, und was gefunden wird,
+   * bekommt die nächste Nummer.
+   *
+   * Findet die Erkennung nichts – ein blasser Abzug hat für sie die Farbe des
+   * Papiers –, wird trotzdem ein Viereck hingelegt. Von Hand gezogen ist immer
+   * noch besser als gar nicht: Sonst bliebe genau das Foto verloren, dessen
+   * wegen der Nutzer überhaupt hingetippt hat.
+   */
+  const addAt = useCallback(
+    async (point: Pt) => {
+      if (!page) return;
+      const found = (await detectAtAsync(page, point)) ?? handQuad(point, page.width, page.height);
+      setQuads((current) => {
+        setSelected((chosen) => [...chosen, current.length].sort((a, b) => a - b));
+        setEditing(current.length);
+        return [...current, found];
       });
-    } finally {
-      setProgress(null);
-      setSaving(false);
-    }
-  }, [closeups, frame, onAccept, options, quads, rotation, selected, shot.frames, small, sweep]);
+    },
+    [page],
+  );
 
-  /** Vorschaubilder der ausgewählten Fotos für die Nahaufnahmen-Runde. */
+  /** Ein Foto ganz entfernen – nicht bloss abwählen. */
+  const remove = useCallback((index: number) => {
+    setQuads((current) => current.filter((_, i) => i !== index));
+    setSelected((current) =>
+      current.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i)),
+    );
+    setEditing(null);
+  }, []);
+
+  /** Die gewählten Fotos, in Koordinaten der Aufnahme. */
+  const chosenInFrame = useCallback(
+    () => (toFrame ? selected.map((index) => applyHomography(toFrame, quads[index]) as Quad) : []),
+    [quads, selected, toFrame],
+  );
+
+  const accept = useCallback(
+    async (closeups: Map<number, CloseupShot>) => {
+      if (selected.length === 0) return;
+      setSaving(true);
+      try {
+        const chosen = chosenInFrame();
+        // Erst die Seitenaufnahme: entzerrt und entspiegelt, aber noch ohne
+        // Nachbearbeitung – sie ist die Vorlage für die Nahaufnahmen.
+        const references = await mergePhotosAsync({ frames: shot.frames, quads: chosen });
+
+        // Die Handschrift wird auf der verkleinerten Fassung gesucht – das
+        // genügt, um sie zu finden –, ausgeschnitten aber aus der vollen
+        // Aufnahme, sonst wäre sie nicht mehr zu lesen.
+        const writings = new Map<number, { blob: Blob; width: number; height: number }>();
+        for (const entry of findWriting(small.image, chosen.map((quad) => scaleQuad(quad, small.scale)))) {
+          const box = {
+            minX: Math.round(entry.box.minX / small.scale),
+            minY: Math.round(entry.box.minY / small.scale),
+            maxX: Math.round(entry.box.maxX / small.scale),
+            maxY: Math.round(entry.box.maxY / small.scale),
+          };
+          const crop = cropWriting(frame, { box, photo: entry.photo }, Math.round(12 / small.scale), chosen);
+          writings.set(entry.photo, {
+            blob: await blobFromImageData(crop, 0.9),
+            width: crop.width,
+            height: crop.height,
+          });
+        }
+
+        const photos: ExtractedPhoto[] = [];
+        for (let i = 0; i < references.length; i++) {
+          if (references.length > 1) setProgress(`Foto ${i + 1} von ${references.length}`);
+          const near = closeups.get(selected[i]);
+          let closeup: Closeup | null = null;
+          if (near) {
+            // Die Nahaufnahmen liegen als Bilddatei vor, nicht als Pixel: Sechs
+            // Aufnahmen in voller Grösse gleichzeitig im Speicher zu halten
+            // sprengt den Rahmen eines Telefons. Ausgepackt wird deshalb erst
+            // hier, eine nach der anderen.
+            const image = await imageDataFromBlob(near.blob, Math.max(near.width, near.height));
+            closeup = { image, quad: near.quad };
+          }
+          const image = await refine({ reference: references[i], closeup, options, rotation });
+          photos.push({
+            blob: await blobFromImageData(image, 0.92),
+            width: image.width,
+            height: image.height,
+            writing: writings.get(i),
+          });
+        }
+        // Die Übersichtsaufnahme kommt mit ins Album: Sie hält fest, wie die
+        // Fotos auf der Seite lagen und was daneben stand.
+        await onAccept(photos, {
+          blob: await blobFromImageData(small.image, 0.82),
+          width: small.image.width,
+          height: small.image.height,
+        });
+      } finally {
+        setProgress(null);
+        setSaving(false);
+      }
+    },
+    [chosenInFrame, frame, onAccept, options, rotation, selected, shot.frames, small],
+  );
+
+  /** In die dritte Stufe: jedes gewählte Foto einzeln aus der Nähe. */
   const openCloseups = useCallback(async () => {
+    if (!page) return;
     const list = await Promise.all(
       selected.map(async (index) => {
-        const scaled = scaleQuad(quads[index], small.scale);
-        const size = outputSize(scaled, 200);
-        const warped = warpPerspective(small.image, scaled, size.width, size.height);
-        return { index, url: URL.createObjectURL(await blobFromImageData(warped, 0.8)) };
+        const size = outputSize(quads[index], 200);
+        const warped = warpPerspective(page, quads[index], size.width, size.height);
+        const full = outputSize(quads[index], 900);
+        return {
+          index,
+          url: URL.createObjectURL(await blobFromImageData(warped, 0.8)),
+          reference: warpPerspective(page, quads[index], full.width, full.height),
+        };
       }),
     );
     setTargets(list);
-  }, [quads, selected, small]);
+  }, [page, quads, selected]);
 
   const closeCloseups = useCallback(() => {
     setTargets((current) => {
@@ -253,7 +353,6 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
     });
   }, []);
 
-  const withCloseup = selected.filter((index) => closeups.has(index)).length;
   // Nur was auch gespeichert wird, ist einen Hinweis wert.
   const betroffen = glare.filter((index) => selected.includes(index));
 
@@ -261,10 +360,10 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
     return (
       <CloseupScreen
         targets={targets}
-        existing={closeups}
+        existing={new Map()}
         onDone={(shots) => {
-          setCloseups(shots);
           closeCloseups();
+          void accept(shots);
         }}
         onCancel={closeCloseups}
       />
@@ -284,33 +383,97 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
     );
   }
 
+  if (step === 'seite') {
+    return (
+      <div className="flex min-h-dvh flex-col bg-stone-950 text-stone-100">
+        <TopBar
+          title="Seite prüfen"
+          left={
+            <IconButton label="Verwerfen" onClick={onCancel}>
+              <BackIcon />
+            </IconButton>
+          }
+        />
+
+        <div className="flex-1 overflow-y-auto pb-32">
+          <div className="relative mx-auto w-full max-w-2xl" style={{ aspectRatio: frame.width / frame.height }}>
+            {sourceUrl && <img src={sourceUrl} alt="Aufnahme" className="size-full object-contain" />}
+            <QuadEditor
+              width={frame.width}
+              height={frame.height}
+              quads={[pageQuad]}
+              selected={[0]}
+              editing={0}
+              onChange={(_, quad) => setPageQuad(quad)}
+            />
+          </div>
+
+          <p className="mx-auto max-w-2xl px-4 pt-4 text-xs leading-relaxed text-stone-400">
+            Das Viereck umfasst die Albumseite. Stimmt es nicht, die Ecken ziehen – lieber
+            etwas zu weit als zu knapp, angeschnitten kommt nichts zurück. Danach wird die
+            Seite geradegerückt und darauf nach Fotos gesucht.
+          </p>
+        </div>
+
+        <div className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-stone-950/95 px-4 pt-3 pb-6 backdrop-blur">
+          <div className="mx-auto flex max-w-2xl gap-3">
+            <Button onClick={onCancel} className="flex-1">
+              Verwerfen
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => setStep('fotos')}
+              className="flex-[2]"
+              data-testid="seite-weiter"
+            >
+              Seite geraderücken
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-dvh flex-col bg-stone-950 text-stone-100">
       <TopBar
-        title="Zuschnitt prüfen"
+        title="Fotos wählen"
         left={
-          <IconButton label="Verwerfen" onClick={onCancel}>
+          <IconButton label="Zurück zur Seite" onClick={() => setStep('seite')}>
             <BackIcon />
           </IconButton>
         }
       />
 
       <div className="flex-1 overflow-y-auto pb-40">
-        <div className="relative mx-auto w-full max-w-2xl" style={{ aspectRatio: frame.width / frame.height }}>
-          {sourceUrl && <img src={sourceUrl} alt="Aufnahme" className="size-full object-contain" />}
-          <QuadEditor
-            width={frame.width}
-            height={frame.height}
-            quads={quads}
-            selected={selected}
-            editing={editing}
-            onToggle={toggle}
-            onActivate={setEditing}
-            onChange={(index, quad) => setQuads((current) => current.map((q, i) => (i === index ? quad : q)))}
-          />
+        <div
+          className="relative mx-auto w-full max-w-2xl"
+          style={{ aspectRatio: page ? page.width / page.height : 4 / 3 }}
+        >
+          {pageUrl && <img src={pageUrl} alt="Albumseite" className="size-full object-contain" />}
+          {page && (
+            <QuadEditor
+              width={page.width}
+              height={page.height}
+              quads={quads}
+              selected={selected}
+              editing={editing}
+              numbered
+              onToggle={toggle}
+              onActivate={setEditing}
+              onAddAt={(point) => void addAt(point)}
+              onChange={(index, quad) => setQuads((current) => current.map((q, i) => (i === index ? quad : q)))}
+            />
+          )}
         </div>
 
         <div className="mx-auto max-w-2xl space-y-4 px-4 pt-4">
+          <p className="text-xs leading-relaxed text-stone-400" data-testid="fotos-hinweis">
+            {searching
+              ? 'Fotos werden gesucht …'
+              : `${quads.length} ${quads.length === 1 ? 'Foto' : 'Fotos'}. Tippe auf ein übersehenes Foto, um es aufzunehmen – es bekommt die nächste Nummer. Das Häkchen nimmt eines heraus, die Ecken lassen sich ziehen.`}
+          </p>
+
           {betroffen.length > 0 && (
             <div
               className="rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs leading-relaxed text-amber-200"
@@ -320,11 +483,14 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
             </div>
           )}
 
-          <p className="text-xs text-stone-400">
-            {quads.length > 1
-              ? 'Das Häkchen nimmt ein Foto aus der Auswahl. Tippe auf ein Foto, um seine Ecken zu zeigen und zu ziehen.'
-              : 'Ziehe die Ecken, wenn der Zuschnitt nicht stimmt.'}
-          </p>
+          {editing !== null && quads[editing] && (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 px-3 py-2 text-xs">
+              <span className="text-stone-400">Foto {editing + 1} ausgewählt</span>
+              <Button onClick={() => remove(editing)} variant="danger" className="px-3 py-1.5 text-xs">
+                Entfernen
+              </Button>
+            </div>
+          )}
 
           <div className="flex items-start gap-4">
             <div className="flex-1">
@@ -345,37 +511,6 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
                 <RotateIcon className="-scale-x-100" />
               </IconButton>
             </div>
-          </div>
-
-          <div className="rounded-xl border border-white/10 px-4 py-3">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-medium">Nahaufnahmen</p>
-                <p className="mt-0.5 text-xs text-stone-400">
-                  Jedes Foto einzeln aus der Nähe: mehr als die dreifache Auflösung. Spiegelungen
-                  rechnet die Seitenaufnahme heraus.
-                </p>
-              </div>
-              <Button
-                onClick={() => void openCloseups()}
-                disabled={selected.length === 0}
-                data-testid="closeups"
-                className="shrink-0 px-3 py-1.5 text-xs"
-              >
-                {withCloseup > 0 ? 'Ergänzen' : 'Aufnehmen'}
-              </Button>
-            </div>
-            {withCloseup > 0 && (
-              <p className="mt-2 text-xs text-amber-300">
-                {withCloseup} von {selected.length} Fotos mit Nahaufnahme
-              </p>
-            )}
-            {sweep.length > 0 && (
-              <p className="mt-2 text-xs text-amber-300" data-testid="blatt-hinweis">
-                Blatt-Scan mit {sweep.length} {sweep.length === 1 ? 'Kachel' : 'Kacheln'} – daraus werden die
-                Fotos zusammengesetzt.
-              </p>
-            )}
           </div>
 
           <div className="rounded-xl border border-white/10 px-4">
@@ -416,18 +551,59 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
         </div>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-stone-950/95 px-4 pt-3 pb-6 backdrop-blur">
+      <div className="fixed inset-x-0 bottom-0 space-y-2 border-t border-white/10 bg-stone-950/95 px-4 pt-3 pb-6 backdrop-blur">
         <div className="mx-auto flex max-w-2xl gap-3">
-          <Button onClick={onCancel} className="flex-1">
-            Verwerfen
+          <Button onClick={() => setStep('seite')} className="flex-1">
+            Zurück
           </Button>
-          <Button variant="primary" onClick={() => void accept()} disabled={selected.length === 0} className="flex-[2]" data-testid="accept">
-            {selected.length > 1 ? `${selected.length} Fotos speichern` : 'Foto speichern'}
+          <Button
+            variant="primary"
+            onClick={() => void openCloseups()}
+            disabled={selected.length === 0}
+            className="flex-[2]"
+            data-testid="details"
+          >
+            {selected.length === 1 ? 'Foto einzeln scannen' : `${selected.length} Fotos einzeln scannen`}
           </Button>
+        </div>
+        <div className="mx-auto max-w-2xl">
+          <button
+            type="button"
+            onClick={() => void accept(new Map())}
+            disabled={selected.length === 0}
+            data-testid="accept"
+            className="w-full py-1 text-center text-xs text-stone-500 hover:text-stone-300 disabled:opacity-40"
+          >
+            Ohne Nahaufnahmen speichern
+          </button>
         </div>
       </div>
     </div>
   );
+}
+
+/** Das ganze Bild als Viereck. */
+function fullQuad(width: number, height: number): Quad {
+  return [
+    { x: 0, y: 0 },
+    { x: width - 1, y: 0 },
+    { x: width - 1, y: height - 1 },
+    { x: 0, y: height - 1 },
+  ];
+}
+
+/** Ein Viereck von Hand: um den angetippten Punkt, in handlicher Grösse. */
+function handQuad(point: Pt, width: number, height: number): Quad {
+  const half = (width * HAND_SIZE) / 2;
+  const halfY = Math.min(half, height * 0.3);
+  const x0 = Math.max(0, Math.min(width - 1 - 2 * half, point.x - half));
+  const y0 = Math.max(0, Math.min(height - 1 - 2 * halfY, point.y - halfY));
+  return [
+    { x: x0, y: y0 },
+    { x: x0 + 2 * half, y: y0 },
+    { x: x0 + 2 * half, y: y0 + 2 * halfY },
+    { x: x0, y: y0 + 2 * halfY },
+  ];
 }
 
 /**
@@ -449,16 +625,6 @@ function glanzText(betroffen: number[], gesamt: number, frames: number): string 
       ? 'Für ein besseres Ergebnis noch einmal aufnehmen und das Telefon dabei deutlicher neigen.'
       : 'Mit eingeschaltetem Entspiegeln lässt sie sich herausrechnen.';
   return `${welche} bleibt auch nach dem Verrechnen eine helle Stelle – vermutlich eine Spiegelung. ${rat}`;
-}
-
-/** Das ganze Bild als Viereck – ein zusammengesetztes Foto ist schon entzerrt. */
-function fullQuad(width: number, height: number): Quad {
-  return [
-    { x: 0, y: 0 },
-    { x: width - 1, y: 0 },
-    { x: width - 1, y: height - 1 },
-    { x: 0, y: height - 1 },
-  ];
 }
 
 function RotateIcon({ className = '' }: { className?: string }) {
