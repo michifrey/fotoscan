@@ -1,13 +1,10 @@
 import type { EnhanceOptions } from './imaging/enhance';
-import { detectPhotoQuads } from './imaging/detect';
+import { detectAt, detectPage, detectPhotoQuads, detectPhotosOnPage } from './imaging/detect';
 import { refinePhoto } from './imaging/closeup';
 import type { Closeup } from './imaging/closeup';
-import { estimateMotion } from './imaging/motion';
-import type { Motion } from './imaging/motion';
-import { reanchor, startPose } from './imaging/pose';
-import type { Pose } from './imaging/pose';
+import { locate } from './imaging/locate';
 import { mergePhotos } from './imaging/stack';
-import type { Quad, RgbaImage } from './imaging/types';
+import type { Pt, Quad, RgbaImage } from './imaging/types';
 import type { TransferImage, WorkerRequest, WorkerResponse } from '../worker/pipeline.worker';
 
 type Pending = { resolve: (value: WorkerResponse) => void; reject: (error: Error) => void };
@@ -68,43 +65,53 @@ export async function detect(image: RgbaImage, analysisSize?: number): Promise<Q
 }
 
 /**
- * Bewegung zwischen zwei Vorschaubildern – im Worker, mit Rückfall auf den
- * Hauptthread. Beim Abfahren einer Seite läuft das mehrmals je Sekunde; auf
- * dem Hauptthread gerechnet ruckelte der Sucher.
+ * Die Albumseite in einer Aufnahme – im Worker, mit Rückfall auf den
+ * Hauptthread. Das läuft in der Vorschau mehrmals je Sekunde.
  */
-export async function trackMotion(previous: RgbaImage, current: RgbaImage): Promise<Motion | null> {
-  const before = toTransfer(previous);
-  const after = toTransfer(current);
+export async function detectPageAsync(image: RgbaImage, analysisSize?: number): Promise<Quad | null> {
+  const payload = toTransfer(image);
   try {
-    const response = await send({ id: nextId++, type: 'motion', previous: before, current: after }, [
-      before.data,
-      after.data,
-    ]);
-    return response.type === 'motion' ? response.motion : null;
+    const response = await send({ id: nextId++, type: 'page', image: payload, analysisSize }, [payload.data]);
+    return response.type === 'page' ? response.page : null;
   } catch {
-    return estimateMotion(previous, current);
+    return detectPage(image, { analysisSize });
   }
 }
 
-/**
- * Die Lage gegen die Übersicht verankern. Ohne `guess` die Anfangslage, sonst
- * eine Nachjustierung der mitgeführten.
- */
-export async function anchorPose(
-  overview: RgbaImage,
-  frame: RgbaImage,
-  guess: Pose | null,
-): Promise<Pose | null> {
-  const map = toTransfer(overview);
-  const shot = toTransfer(frame);
+/** Die Fotos auf einer bereits entzerrten Seite. */
+export async function detectPhotosAsync(page: RgbaImage): Promise<Quad[]> {
+  const payload = toTransfer(page);
   try {
-    const response = await send({ id: nextId++, type: 'anchor', overview: map, frame: shot, guess }, [
-      map.data,
-      shot.data,
-    ]);
-    return response.type === 'anchor' ? response.pose : null;
+    const response = await send({ id: nextId++, type: 'photos', page: payload }, [payload.data]);
+    return response.type === 'photos' ? response.quads : [];
   } catch {
-    return guess ? reanchor(overview, frame, guess) : startPose(overview, frame);
+    return detectPhotosOnPage(page);
+  }
+}
+
+/** Das Foto an einer angetippten Stelle. */
+export async function detectAtAsync(page: RgbaImage, point: Pt): Promise<Quad | null> {
+  const payload = toTransfer(page);
+  try {
+    const response = await send({ id: nextId++, type: 'spot', page: payload, point }, [payload.data]);
+    return response.type === 'spot' ? response.quad : null;
+  } catch {
+    return detectAt(page, point);
+  }
+}
+
+/** Das Foto der Seitenaufnahme im Nahbild wiederfinden. */
+export async function locateAsync(reference: RgbaImage, frame: RgbaImage): Promise<Quad | null> {
+  const first = toTransfer(reference);
+  const second = toTransfer(frame);
+  try {
+    const response = await send({ id: nextId++, type: 'locate', reference: first, frame: second }, [
+      first.data,
+      second.data,
+    ]);
+    return response.type === 'locate' ? response.quad : null;
+  } catch {
+    return locate(reference, frame);
   }
 }
 

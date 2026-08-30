@@ -9,11 +9,25 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
 
 ## Was die App macht
 
-- **Fotos automatisch finden.** Eine aufgeschlagene Albumseite wird als Ganzes
-  fotografiert; die App erkennt die einzelnen Bilder darauf und schneidet jedes
-  separat zu. Ein einzelnes Foto auf dem Tisch funktioniert genauso.
+- **Zwei Stufen: erst die Seite, dann die Fotos.** Die aufgeschlagene Albumseite
+  wird als Ganzes fotografiert. Danach fragt die App zweimal, und beide
+  Antworten lassen sich ändern: *Ist das die Seite?* – ihr Viereck steht über
+  der Aufnahme, die Ecken sind zu ziehen – und dann, auf der geradegerückten
+  Seite: *Sind das die Fotos?* Sie stehen durchnummeriert darauf.
+
+  Vorher entschied die Erkennung beides in einem Zug und dazu noch, ob die
+  gefundene Unterteilung überhaupt echt ist. Irrte sie sich dabei, kam die ganze
+  Seite als ein einziges Foto heraus, und niemand konnte widersprechen. Genau
+  diese Entscheidung liegt jetzt beim Menschen.
+- **Was übersehen wurde, holt ein Tipp herein.** Auf ein nicht erkanntes Foto
+  tippen: Die App sieht dort nach, und was sie findet, bekommt die nächste
+  Nummer. Findet sie nichts – ein blasser Abzug hat für sie die Farbe des
+  Papiers –, legt sie ein Viereck hin, dessen Ecken sich ziehen lassen. Von Hand
+  ist besser als verloren.
 - **Perspektive korrigieren.** Schräg aufgenommene Bilder werden auf ein
-  Rechteck entzerrt, inklusive Drehung.
+  Rechteck entzerrt, inklusive Drehung. Die Seite wird dafür bewusst etwas zu
+  weit gefasst: Ein Streifen Tisch am Rand stört niemanden, eine abgeschnittene
+  Ecke bekommt niemand zurück.
 - **Entspiegeln über vier Punkte.** Nach dem Auslösen erscheinen vier Punkte –
   nicht auf dem Bildschirm, sondern auf dem Album selbst: Sie liegen dort, wo
   die App das Motiv sieht, und wandern mit ihm mit. Das Telefon wird
@@ -22,21 +36,16 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
   jeder der fünf Aufnahmen woanders und fällt beim Verrechnen als heller
   Ausreisser heraus. Verliert die Kamera das Album aus dem Blick, wird nicht
   ausgelöst – sonst entstünden vier Aufnahmen vom Tisch.
-- **Das Blatt abfahren.** Statt das Telefon zu kippen, wird es flach über die
-  Seite geführt – näher heran, in überlappenden Kacheln. Die App führt dabei
-  mit, wo die Kamera auf der Seite steht: Sie misst je Vorschaubild nur die
-  Änderung zum vorigen und justiert sie regelmässig gegen die
-  Übersichtsaufnahme nach. Eine Karte des Blattes zeigt, was noch fehlt; hell
-  ist offen, dunkel erledigt. Aus den Kacheln entsteht am Ende je Foto ein
-  Abzug mit einem Vielfachen der Bildpunkte – und wo zwei Kacheln dieselbe
-  Stelle aus verschiedenen Richtungen zeigen, verschwindet dabei der Glanz.
-  Einen zweiten Durchgang verlangt die Karte nur dort, wo wirklich etwas
-  glänzte; überall zweimal abzufahren wäre die doppelte Mühe für nichts.
-- **Nahaufnahmen für die Auflösung.** Auf der Seitenaufnahme teilen sich alle
+- **Jedes Foto einzeln aus der Nähe.** Auf der Seitenaufnahme teilen sich alle
   Fotos einer Seite die Bildpunkte der Kamera; für das einzelne Foto bleiben ein
-  paar hundert. Wer will, geht danach jedes Foto einzeln noch einmal aus der
-  Nähe an – das bringt ein Vielfaches an Auflösung. Die Spiegelung, die sich aus
-  der Nähe unweigerlich einstellt, rechnet die Seitenaufnahme wieder heraus.
+  paar hundert. Der dritte Schritt geht sie deshalb der Reihe nach durch – das
+  bringt ein Vielfaches an Auflösung. Die Spiegelung, die sich aus der Nähe
+  unweigerlich einstellt, rechnet die Seitenaufnahme wieder heraus.
+
+  Wo das Foto im Nahbild liegt, wird nicht geraten: Die Seitenaufnahme zeigt es
+  bereits, und die App findet es darin wieder. Vorher galt „das grösste erkannte
+  Viereck wird es schon sein" – und wenn nicht, wurde mitten durchs Motiv
+  geschnitten, ohne dass es jemandem auffiel.
 - **Licht, wenn es zu dunkel ist.** Die App misst, wie hell das Motiv vor der
   Kamera liegt – der Median, und nur dort, wo die Seite liegt, damit ein
   Fenster im Bild sie nicht täuscht. Wird es zu dunkel, schaltet sie das Licht
@@ -90,16 +99,16 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
    sich ab, sobald der Ring darauf liegt. Blasst der Punktekranz ab, ist das
    Album aus dem Blick geraten; dann wird nichts aufgenommen, bis es wieder da
    ist. **Fertig** bricht früher ab und rechnet mit dem, was da ist.
-4. Im Schritt **Zuschnitt prüfen** einzelne Fotos über das Häkchen abwählen,
-   Ecken bei Bedarf nachziehen, drehen.
-5. Oder gleich das ganze Blatt: Chip **Blatt**, auslösen – damit steht die
-   Übersicht –, und dann das Telefon flach über die Seite führen und näher
-   herangehen. Die Karte unten zeigt, wo noch etwas fehlt; ausgelöst wird von
-   selbst, sobald der Ausschnitt auf offenen Feldern liegt und fein genug ist.
-   **Fertig** übernimmt die Kacheln.
-6. Wer es schärfer will: **Nahaufnahmen → Aufnehmen**. Die App geht die Fotos
-   der Reihe nach durch; jedes wird formatfüllend aufgenommen, einzeln
-   überspringbar. Danach zurück im Zuschnitt speichern.
+4. **Seite prüfen:** Das Viereck umfasst die Albumseite. Stimmt es nicht, die
+   Ecken ziehen – lieber etwas zu weit als zu knapp. **Seite geraderücken.**
+5. **Fotos wählen:** Auf der geraden Seite stehen die gefundenen Fotos,
+   durchnummeriert. Ecken nachziehen, Falsches über das Häkchen abwählen oder
+   entfernen, Übersehenes antippen. Drehen und Aufhellen sind hier ebenfalls
+   eingestellt.
+6. **Fotos einzeln scannen:** Die App geht die gewählten Fotos der Reihe nach
+   durch; jedes wird formatfüllend aufgenommen, einzeln überspringbar. Danach
+   wird gespeichert. Wer es eilig hat, nimmt darunter **Ohne Nahaufnahmen
+   speichern**.
 7. Im Album: tippen zum Ansehen, **Ordnen** zum Umsortieren, **Beschriften**
    für Titel, Datum und Notiz, das Suchfeld zum Wiederfinden.
 8. Über **Weitergeben** wandert das Album als Fotobuch (PDF) oder als ZIP auf
@@ -119,9 +128,9 @@ vorhandenes Bild öffnen und genauso verarbeiten.
 - Entspiegeln eingeschaltet lassen und die vier Punkte wirklich anfahren –
   je deutlicher der Blickwinkel wechselt, desto sauberer verschwindet die
   Spiegelung.
-- Beim Blatt-Scan das Telefon in der Waage halten und langsam führen. Ruckartige
-  Bewegungen reissen den Faden ab; die App sagt das dann auch und sucht die
-  Stelle neu, statt eine falsche Lage vorzutäuschen.
+- Die Seite mit etwas Luft ringsum aufnehmen: Der Tisch daneben ist es, woran
+  die App die Seite erkennt. Füllt die Seite das Bild vollständig, findet sie
+  keine – dann gilt das ganze Bild als Seite, und das ist auch richtig so.
 
 Ohne Lagesensor – am Rechner oder wenn iOS den Zugriff verweigert – nimmt die
 App stattdessen fünf Aufnahmen im Takt auf und bittet darum, das Telefon dabei
@@ -144,10 +153,10 @@ kein WASM-Download. Die Pipeline liegt in [`src/lib/imaging/`](src/lib/imaging):
 | Spiegelungen finden | `glare.ts` | ausgebrannt, farblos und ein Fleck – alle drei zusammen |
 | Aufnahmen zuordnen | `detect.ts`, `stack.ts` | jede Aufnahme einzeln erkennen und ihr Viereck der Grundaufnahme zuordnen |
 | Entspiegeln | `destack.ts` | Aufnahmen ausrichten, pro Pixel den mittleren Helligkeitswert nehmen; wo der Glanz die Mehrheit hat, die dunkelste Aufnahme |
-| Bewegung messen | `motion.ts`, `patches.ts` | Teilstücke des vorigen Vorschaubildes im aktuellen wiederfinden, daraus die Abbildung ausgleichen |
-| Lage mitführen | `pose.ts` | die Bewegungen aufmultiplizieren und regelmässig gegen die Übersicht nachverankern – beide Seiten dabei auf dieselbe Bodenauflösung bringen |
-| Deckung des Blattes | `coverage.ts` | Raster über die Übersicht: wo Fotos liegen, wie fein getroffen, ob es dort glänzte |
-| Kacheln zusammensetzen | `mosaic.ts` | je Zielbildpunkt die Kachel, die ihn am weitesten von ihrem eigenen Rand trägt; überlappen zwei, gewinnt die dunklere |
+| Seite finden | `detect.ts` | die grösste eingeschlossene Fläche – in beide Richtungen gesucht, je nachdem ob Tisch oder Seite den Untergrund stellt |
+| Fotos auf der Seite | `detect.ts` | eine Ebene auf der entzerrten Seite, ohne eigene Entscheidung über die Unterteilung |
+| Angetipptes Foto | `detect.ts` | die Fläche der Maske, die den Punkt enthält |
+| Nahaufnahme verorten | `locate.ts`, `patches.ts` | Teilstücke des Zuschnitts aus der Seitenaufnahme im Nahbild wiederfinden, daraus die Abbildung ausgleichen |
 | Nahaufnahme verrechnen | `closeup.ts` | Seitenaufnahme auf die Nahaufnahme hochziehen, Glanzstellen daraus ersetzen |
 | Aufhellen | `enhance.ts` | Tonwertspreizung über die Helligkeit, Grauwelt-Weissabgleich, Unschärfemaske |
 
@@ -313,17 +322,16 @@ einbinden.
   samt der Gegenproben, die es begrenzen: ein weisses Hemd, über das sich alle
   Aufnahmen einig sind, der Bildrand, und ein Foto ganz ohne Glanz. Und das
   Messen der Helligkeit, dem weder ein Fenster neben dem Motiv noch eine helle
-  Tischplatte ringsum etwas anhaben kann. Für den Blatt-Scan: dass die Lage
-  über achtzehn Bilder eines Kameraweges dort bleibt, wo die Kamera wirklich
-  steht – mit der Gegenprobe, dass sie ohne Nachverankern messbar wegläuft –,
-  dass ein Abriss als Abriss erkannt wird statt stillschweigend falsch
-  weiterzulaufen, und dass die Anfangslage auch dann steht, wenn die Übersicht
-  viel feiner ist als das Vorschaubild. Dazu das Zusammensetzen: dass das Foto
-  aus Kacheln messbar näher an der Vorlage liegt als der Zuschnitt aus der
-  Seitenaufnahme und die gewonnene Auflösung auch behält, dass der Glanz einer
-  Kachel von der anderen abgelöst wird, dass eine helle Fläche, über die sich
-  beide einig sind, stehen bleibt – und dass nur die Kacheln ausgepackt werden,
-  die das Foto überhaupt berühren.
+  Tischplatte ringsum etwas anhaben kann. Für die zwei Stufen: dass die
+  gefundene Seite die wirkliche **enthält** statt sie anzuschneiden, dass die
+  Fotos auf der entzerrten Seite genauer sitzen als in einem Zug erkannt (1,4
+  gegen 2,8 Bildpunkte mittlerer Mittenabstand), dass eine Seite mit einem
+  einzelnen kleinen Foto nicht mehr als ein grosses herauskommt, dass auf einer
+  formatfüllenden Seite gar keine gefunden wird – und dass ein Tipp dasselbe
+  Viereck liefert, egal wo im Foto er landet, auf blankem Papier dagegen nichts.
+  Dazu das Verorten der Nahaufnahme: Eckfehler von 10 px formatfüllend und 13 px
+  mit Rand, anderem Licht und Glanz, auf einem 900 px breiten Nahbild – und
+  nichts, wenn ein anderes Foto vor der Kamera liegt.
 - Für das Album: das Fotobuch (Deckblatt und Seitenzahl, unveränderte
   JPEG-Daten, stimmende Querverweistabelle, Umlaute, die Handschrift auf der
   Seite) – geprüft an der geschriebenen Datei, nicht an der Absicht. Dazu die
@@ -341,12 +349,10 @@ einbinden.
   vier Punkte über nachgestellte Neigungswerte anfahren, das gerechnete Foto
   speichern – und der Rückfall auf die Zeitsteuerung, wenn kein Lagesensor
   antwortet. Dazu die Runde der Nahaufnahmen: der Reihe nach durchgehen,
-  überspringen, abbrechen. Und den Blatt-Scan: Übersicht auslösen, Karte,
-  Kacheln von Hand, **Fertig**, speichern – dieser Ablauf bekommt ein
-  Kamerabild mit Struktur, denn Chromiums eingebautes Testbild ist eine fast
-  einfarbige grüne Fläche, in der es zu Recht nichts wiederzufinden gibt.
-  `scripts/make-test-fixture.mjs` legt die Albumseite dafür zusätzlich als
-  Y4M-Datei ab, die Chromium als Kamera vorgesetzt bekommt. Und das Album: beschriften, suchen, umsortieren per
+  überspringen, abbrechen. Und den zweistufigen Weg: Seite bestätigen, drei
+  Fotos auf der geraden Seite, eines abwählen, ein übersehenes antippen – es
+  erscheint als vierte Nummer und lässt sich sofort an den Ecken ziehen. Und das
+  Album: beschriften, suchen, umsortieren per
   Ziehen, die Seitenansicht, die Handschrift beim Foto, das Fotobuch
   herunterladen und die Erweiterung der alten Datenbank. Dazu die ganze Runde
   der Sicherung gegen ein nachgestelltes GitHub: sichern, Datenbank und Token

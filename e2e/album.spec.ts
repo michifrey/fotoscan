@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
+import { gewaehlt, seiteBestaetigen } from './flow';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/albumseite.png', import.meta.url));
 
@@ -10,7 +11,8 @@ async function albumMitDreiFotos(page: Page, name: string): Promise<void> {
   await page.getByTestId('create-album').click();
   await page.getByTestId('scan').click();
   await page.getByTestId('import-input').setInputFiles(FIXTURE);
-  await expect(page.getByTestId('accept')).toHaveText('3 Fotos speichern');
+  await seiteBestaetigen(page);
+  await expect(gewaehlt(page)).toHaveText('3 Fotos einzeln scannen');
   await page.getByTestId('accept').click();
   await expect(page.getByTestId('shutter')).toBeVisible({ timeout: 60_000 });
   await page.getByRole('button', { name: 'Zurück' }).click();

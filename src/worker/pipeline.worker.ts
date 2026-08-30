@@ -1,13 +1,10 @@
 /// <reference lib="webworker" />
-import { detectPhotoQuads } from '../lib/imaging/detect';
-import { estimateMotion } from '../lib/imaging/motion';
-import type { Motion } from '../lib/imaging/motion';
-import { reanchor, startPose } from '../lib/imaging/pose';
-import type { Pose } from '../lib/imaging/pose';
+import { detectAt, detectPage, detectPhotoQuads, detectPhotosOnPage } from '../lib/imaging/detect';
 import { refinePhoto } from '../lib/imaging/closeup';
+import { locate } from '../lib/imaging/locate';
 import { mergePhotos } from '../lib/imaging/stack';
 import type { EnhanceOptions } from '../lib/imaging/enhance';
-import type { Quad, RgbaImage } from '../lib/imaging/types';
+import type { Pt, Quad, RgbaImage } from '../lib/imaging/types';
 
 export interface TransferImage {
   data: ArrayBuffer;
@@ -18,8 +15,10 @@ export interface TransferImage {
 export type WorkerRequest =
   | { id: number; type: 'detect'; image: TransferImage; analysisSize?: number }
   | { id: number; type: 'merge'; frames: TransferImage[]; quads: Quad[] }
-  | { id: number; type: 'motion'; previous: TransferImage; current: TransferImage }
-  | { id: number; type: 'anchor'; overview: TransferImage; frame: TransferImage; guess: Pose | null }
+  | { id: number; type: 'page'; image: TransferImage; analysisSize?: number }
+  | { id: number; type: 'photos'; page: TransferImage }
+  | { id: number; type: 'spot'; page: TransferImage; point: Pt }
+  | { id: number; type: 'locate'; reference: TransferImage; frame: TransferImage }
   | {
       id: number;
       type: 'refine';
@@ -33,8 +32,10 @@ export type WorkerRequest =
 export type WorkerResponse =
   | { id: number; type: 'detect'; quads: Quad[] }
   | { id: number; type: 'merge'; images: TransferImage[] }
-  | { id: number; type: 'motion'; motion: Motion | null }
-  | { id: number; type: 'anchor'; pose: Pose | null }
+  | { id: number; type: 'page'; page: Quad | null }
+  | { id: number; type: 'photos'; quads: Quad[] }
+  | { id: number; type: 'spot'; quad: Quad | null }
+  | { id: number; type: 'locate'; quad: Quad | null }
   | { id: number; type: 'refine'; image: TransferImage }
   | { id: number; type: 'error'; message: string };
 
@@ -67,21 +68,33 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       return;
     }
 
-    // Beim Abfahren einer Seite: die Bewegung zwischen zwei Vorschaubildern
-    // und das Nachverankern gegen die Übersicht. Beides gehört hierher, damit
-    // der Sucher flüssig bleibt.
-    if (request.type === 'motion') {
-      const motion = estimateMotion(toRgba(request.previous), toRgba(request.current));
-      const response: WorkerResponse = { id: request.id, type: 'motion', motion };
+    // Die beiden Stufen der Erfassung und das, was dazwischen von Hand
+    // nachgeholfen wird. Alles hierher, damit der Sucher flüssig bleibt und
+    // ein Tipp sofort antwortet.
+    if (request.type === 'page') {
+      const page = detectPage(toRgba(request.image), { analysisSize: request.analysisSize });
+      const response: WorkerResponse = { id: request.id, type: 'page', page };
       self.postMessage(response);
       return;
     }
 
-    if (request.type === 'anchor') {
-      const overview = toRgba(request.overview);
-      const frame = toRgba(request.frame);
-      const pose = request.guess ? reanchor(overview, frame, request.guess) : startPose(overview, frame);
-      const response: WorkerResponse = { id: request.id, type: 'anchor', pose };
+    if (request.type === 'photos') {
+      const quads = detectPhotosOnPage(toRgba(request.page));
+      const response: WorkerResponse = { id: request.id, type: 'photos', quads };
+      self.postMessage(response);
+      return;
+    }
+
+    if (request.type === 'spot') {
+      const quad = detectAt(toRgba(request.page), request.point);
+      const response: WorkerResponse = { id: request.id, type: 'spot', quad };
+      self.postMessage(response);
+      return;
+    }
+
+    if (request.type === 'locate') {
+      const quad = locate(toRgba(request.reference), toRgba(request.frame));
+      const response: WorkerResponse = { id: request.id, type: 'locate', quad };
       self.postMessage(response);
       return;
     }

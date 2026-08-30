@@ -15,7 +15,7 @@ const LICHT_VON_HAND: Light = { available: true, on: false, automatic: false };
 describe('Bildlage im Sucher', () => {
   it('meldet, wenn gar nichts erkannt ist', () => {
     expect(framing([], 480, 360, true, HELL)).toBe('leer');
-    expect(framingText('leer', 0, LICHT_AUS)).toContain('Kein Foto erkannt');
+    expect(framingText('leer', LICHT_AUS)).toContain('Keine Albumseite erkannt');
   });
 
   it('löst nicht aus, solange ein Foto bis an den Bildrand reicht', () => {
@@ -23,21 +23,20 @@ describe('Bildlage im Sucher', () => {
     // der Sucher schweigt dazu.
     const angeschnitten = rectQuad(-20, 60, 300, 220, 0);
     expect(framing([angeschnitten], 480, 360, true, HELL)).toBe('rand');
-    expect(framingText('rand', 1, LICHT_AUS)).toContain('weiter weg');
+    expect(framingText('rand', LICHT_AUS)).toContain('weiter weg');
   });
 
   it('wartet auf eine ruhige Kamera', () => {
     const foto = rectQuad(90, 70, 300, 220, 0);
     expect(framing([foto], 480, 360, false, HELL)).toBe('unruhig');
-    expect(framingText('unruhig', 1, LICHT_AUS)).toContain('ruhig halten');
+    expect(framingText('unruhig', LICHT_AUS)).toContain('ruhig halten');
   });
 
   it('gilt als bereit, wenn alles im Bild liegt und ruhig ist', () => {
     const links = rectQuad(40, 60, 170, 220, 0);
     const rechts = rectQuad(260, 60, 170, 220, 0);
     expect(framing([links, rechts], 480, 360, true, HELL)).toBe('bereit');
-    expect(framingText('bereit', 2, LICHT_AUS)).toBe('2 Fotos erkannt');
-    expect(framingText('bereit', 1, LICHT_AUS)).toBe('1 Foto erkannt');
+    expect(framingText('bereit', LICHT_AUS)).toBe('Seite erkannt');
   });
 
   it('nennt die Dunkelheit zuerst', () => {
@@ -50,11 +49,11 @@ describe('Bildlage im Sucher', () => {
   });
 
   it('sagt bei Dunkelheit, was mit dem Licht geschieht', () => {
-    expect(framingText('dunkel', 0, KEIN_LICHT)).toContain('mehr Licht');
-    expect(framingText('dunkel', 0, LICHT_AUS)).toContain('wird zugeschaltet');
-    expect(framingText('dunkel', 0, LICHT_AN)).toContain('Licht ist an');
+    expect(framingText('dunkel', KEIN_LICHT)).toContain('mehr Licht');
+    expect(framingText('dunkel', LICHT_AUS)).toContain('wird zugeschaltet');
+    expect(framingText('dunkel', LICHT_AN)).toContain('Licht ist an');
     // Ohne Automatik – beim Einzelbild oder nach einem Tipp auf die Taste –
     // wird nicht von selbst geschaltet, sondern darauf hingewiesen.
-    expect(framingText('dunkel', 0, LICHT_VON_HAND)).toContain('antippen');
+    expect(framingText('dunkel', LICHT_VON_HAND)).toContain('antippen');
   });
 });

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { seiteBestaetigen } from './flow';
 
 /** Eine Telefonhaltung nachstellen. Erst danach gilt der Lagesensor als aktiv. */
 async function neige(page: Page, beta: number, gamma: number): Promise<void> {
@@ -57,8 +58,8 @@ test('vier Punkte abfahren und daraus ein entspiegeltes Foto rechnen', async ({ 
 
   await neige(page, 0, -11);
 
-  // Nach dem vierten Punkt geht es von selbst zur Prüfung des Zuschnitts.
-  await expect(page.getByRole('heading', { name: 'Zuschnitt prüfen' })).toBeVisible({ timeout: 30_000 });
+  // Nach dem vierten Punkt geht es von selbst zur Prüfung der Seite.
+  await seiteBestaetigen(page);
 
   await page.getByTestId('accept').click();
   await expect(page.getByTestId('shutter')).toBeVisible({ timeout: 60_000 });
@@ -83,5 +84,5 @@ test('ohne Lagesensor übernimmt die Zeitsteuerung', async ({ page }) => {
 
   // Es werden keine Neigungswerte geschickt. Nach der Wartezeit muss die App
   // von selbst auf die zeitgesteuerte Reihe umschalten.
-  await expect(page.getByRole('heading', { name: 'Zuschnitt prüfen' })).toBeVisible({ timeout: 40_000 });
+  await expect(page.getByRole('heading', { name: 'Seite prüfen' })).toBeVisible({ timeout: 40_000 });
 });

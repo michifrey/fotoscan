@@ -1,5 +1,4 @@
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 4177;
@@ -39,26 +38,6 @@ export default defineConfig({
         launchOptions: {
           executablePath,
           args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
-        },
-      },
-    },
-    {
-      // Chromiums eingebautes Kamerabild ist eine fast einfarbige grüne
-      // Fläche. Wer eine Stelle auf dem Blatt wiederfinden will, findet darin
-      // nichts – zu Recht. Dieser Ablauf bekommt deshalb ein Kamerabild mit
-      // Struktur: die Albumseite als Y4M-Datei, gebaut von
-      // `scripts/fixture-video.mjs`.
-      name: 'blatt',
-      testMatch: /blatt\.spec\.ts/,
-      use: {
-        permissions: ['camera'],
-        launchOptions: {
-          executablePath,
-          args: [
-            '--use-fake-device-for-media-stream',
-            '--use-fake-ui-for-media-stream',
-            `--use-file-for-fake-video-capture=${fileURLToPath(new URL('./e2e/fixtures/albumseite.y4m', import.meta.url))}`,
-          ],
         },
       },
     },
