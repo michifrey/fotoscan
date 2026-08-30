@@ -7,6 +7,8 @@ import { cropWriting, findWriting } from '../lib/imaging/writing';
 import { scaleQuad } from '../lib/imaging/geometry';
 import type { Quad } from '../lib/imaging/types';
 import { hasGlare } from '../lib/imaging/glare';
+import { composeFromTiles } from '../lib/imaging/mosaic';
+import type { LazyTile } from '../lib/imaging/mosaic';
 import { mergePhotosAsync, refine } from '../lib/pipeline';
 import type { Closeup } from '../lib/imaging/closeup';
 import type { Shot } from './CaptureScreen';
@@ -55,6 +57,24 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
 
   const frame = shot.frames[0];
   const previewCanvas = useRef<HTMLCanvasElement | null>(null);
+
+  /**
+   * Die Kacheln eines Blatt-Scans, noch nicht ausgepackt.
+   *
+   * Ein Dutzend Aufnahmen in voller Grösse gleichzeitig im Speicher sprengt
+   * ein Telefon – dieselbe Disziplin wie bei den Nahaufnahmen. Geladen wird
+   * je Foto nur, was es überhaupt berührt, und eine Kachel nach der anderen.
+   */
+  const sweep = useMemo<LazyTile[]>(
+    () =>
+      (shot.sweep ?? []).map((tile) => ({
+        width: tile.width,
+        height: tile.height,
+        pose: tile.pose,
+        load: () => imageDataFromBlob(tile.blob, Math.max(tile.width, tile.height)),
+      })),
+    [shot.sweep],
+  );
 
   // Verkleinerte Kopien der Aufnahmen – für die Vorschau, damit das Nachführen
   // beim Ziehen der Ecken flüssig bleibt, und für die Prüfung auf
@@ -173,6 +193,17 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
         if (references.length > 1) setProgress(`Foto ${i + 1} von ${references.length}`);
         const near = closeups.get(selected[i]);
         let closeup: Closeup | null = null;
+        if (!near && sweep.length > 0) {
+          // Aus dem Blatt-Scan: Die Kacheln dieses Fotos werden zu einem
+          // scharfen Abzug zusammengesetzt. Von da an ist er eine Nahaufnahme
+          // wie jede andere – die Seitenaufnahme rechnet seinen Glanz heraus,
+          // und der Rest des Weges bleibt derselbe.
+          setProgress(`Foto ${i + 1} von ${references.length} – Kacheln werden zusammengesetzt`);
+          const mosaic = await composeFromTiles(frame, chosen[i], sweep);
+          if (mosaic) {
+            closeup = { image: mosaic, quad: fullQuad(mosaic.width, mosaic.height) };
+          }
+        }
         if (near) {
           // Die Nahaufnahmen liegen als Bilddatei vor, nicht als Pixel: Sechs
           // Aufnahmen in voller Grösse gleichzeitig im Speicher zu halten
@@ -200,7 +231,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       setProgress(null);
       setSaving(false);
     }
-  }, [closeups, frame, onAccept, options, quads, rotation, selected, shot.frames, small]);
+  }, [closeups, frame, onAccept, options, quads, rotation, selected, shot.frames, small, sweep]);
 
   /** Vorschaubilder der ausgewählten Fotos für die Nahaufnahmen-Runde. */
   const openCloseups = useCallback(async () => {
@@ -339,6 +370,12 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
                 {withCloseup} von {selected.length} Fotos mit Nahaufnahme
               </p>
             )}
+            {sweep.length > 0 && (
+              <p className="mt-2 text-xs text-amber-300" data-testid="blatt-hinweis">
+                Blatt-Scan mit {sweep.length} {sweep.length === 1 ? 'Kachel' : 'Kacheln'} – daraus werden die
+                Fotos zusammengesetzt.
+              </p>
+            )}
           </div>
 
           <div className="rounded-xl border border-white/10 px-4">
@@ -412,6 +449,16 @@ function glanzText(betroffen: number[], gesamt: number, frames: number): string 
       ? 'Für ein besseres Ergebnis noch einmal aufnehmen und das Telefon dabei deutlicher neigen.'
       : 'Mit eingeschaltetem Entspiegeln lässt sie sich herausrechnen.';
   return `${welche} bleibt auch nach dem Verrechnen eine helle Stelle – vermutlich eine Spiegelung. ${rat}`;
+}
+
+/** Das ganze Bild als Viereck – ein zusammengesetztes Foto ist schon entzerrt. */
+function fullQuad(width: number, height: number): Quad {
+  return [
+    { x: 0, y: 0 },
+    { x: width - 1, y: 0 },
+    { x: width - 1, y: height - 1 },
+    { x: 0, y: height - 1 },
+  ];
 }
 
 function RotateIcon({ className = '' }: { className?: string }) {

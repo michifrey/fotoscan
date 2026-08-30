@@ -2,6 +2,10 @@ import type { EnhanceOptions } from './imaging/enhance';
 import { detectPhotoQuads } from './imaging/detect';
 import { refinePhoto } from './imaging/closeup';
 import type { Closeup } from './imaging/closeup';
+import { estimateMotion } from './imaging/motion';
+import type { Motion } from './imaging/motion';
+import { reanchor, startPose } from './imaging/pose';
+import type { Pose } from './imaging/pose';
 import { mergePhotos } from './imaging/stack';
 import type { Quad, RgbaImage } from './imaging/types';
 import type { TransferImage, WorkerRequest, WorkerResponse } from '../worker/pipeline.worker';
@@ -60,6 +64,47 @@ export async function detect(image: RgbaImage, analysisSize?: number): Promise<Q
     return response.type === 'detect' ? response.quads : [];
   } catch {
     return detectPhotoQuads(image, { analysisSize });
+  }
+}
+
+/**
+ * Bewegung zwischen zwei Vorschaubildern – im Worker, mit Rückfall auf den
+ * Hauptthread. Beim Abfahren einer Seite läuft das mehrmals je Sekunde; auf
+ * dem Hauptthread gerechnet ruckelte der Sucher.
+ */
+export async function trackMotion(previous: RgbaImage, current: RgbaImage): Promise<Motion | null> {
+  const before = toTransfer(previous);
+  const after = toTransfer(current);
+  try {
+    const response = await send({ id: nextId++, type: 'motion', previous: before, current: after }, [
+      before.data,
+      after.data,
+    ]);
+    return response.type === 'motion' ? response.motion : null;
+  } catch {
+    return estimateMotion(previous, current);
+  }
+}
+
+/**
+ * Die Lage gegen die Übersicht verankern. Ohne `guess` die Anfangslage, sonst
+ * eine Nachjustierung der mitgeführten.
+ */
+export async function anchorPose(
+  overview: RgbaImage,
+  frame: RgbaImage,
+  guess: Pose | null,
+): Promise<Pose | null> {
+  const map = toTransfer(overview);
+  const shot = toTransfer(frame);
+  try {
+    const response = await send({ id: nextId++, type: 'anchor', overview: map, frame: shot, guess }, [
+      map.data,
+      shot.data,
+    ]);
+    return response.type === 'anchor' ? response.pose : null;
+  } catch {
+    return guess ? reanchor(overview, frame, guess) : startPose(overview, frame);
   }
 }
 

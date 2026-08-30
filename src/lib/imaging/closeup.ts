@@ -267,7 +267,7 @@ function align(src: RgbaImage, dx: number, dy: number): RgbaImage {
  * hellen Stellen fände das ganze Foto. Verglichen werden Mittelwerte, die
  * gegen Ausreisser unempfindlich sind: der Median je Kanal.
  */
-function matchExposure(image: RgbaImage, target: RgbaImage): void {
+export function matchExposure(image: RgbaImage, target: RgbaImage): void {
   for (let c = 0; c < 3; c++) {
     const from = median(image, c);
     const to = median(target, c);
