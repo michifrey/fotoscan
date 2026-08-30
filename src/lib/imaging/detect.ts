@@ -67,6 +67,38 @@ const PAGE_MIN = 0.12;
  */
 const HOLE_MAX = 0.15;
 
+/** So viel des Bildes muss die Albumseite mindestens ausmachen. */
+const PAGE_AREA_MIN = 0.12;
+
+/**
+ * So viel gleichmässige Fläche muss im Inneren einer Seite stehen – ihr
+ * Papier. Ohne diese Prüfung käme auf einer formatfüllend aufgenommenen Seite
+ * das grösste **Foto** als „Seite" heraus: Es berührt den Bildrand nicht und
+ * ist die grösste eingeschlossene Fläche. Ein Foto ist innen aber nirgends
+ * gleichmässig, eine Albumseite überall dort, wo Papier zu sehen ist.
+ */
+const PAGE_SURFACE_MIN = 0.18;
+
+/**
+ * Ab dieser Grösse gilt eine zweite eingeschlossene Fläche als Geschwister
+ * statt als Beiwerk – gemessen an der grössten.
+ */
+const SIBLING_SHARE = 0.4;
+
+/** Und so weit wird ihr Viereck nach aussen geweitet, als Anteil der kurzen Kante. */
+const PAGE_MARGIN = 0.02;
+
+/**
+ * So viel sichtbares Papier braucht es, damit der Papierfilter greifen darf.
+ * Auf einer dicht belegten Seite ist der häufigste Farbton der der Fotos
+ * selbst; dort würde er sie alle verwerfen.
+ */
+const PAPER_FILTER_MIN = 0.25;
+
+/** Grenzen für ein angetipptes Foto, als Anteil der Seitenfläche. */
+const TAP_AREA_MIN = 0.004;
+const TAP_AREA_MAX = 0.9;
+
 /** Kantenlänge der Stichprobe, mit der eine Fläche auf Papierfarbe geprüft wird. */
 const PAPER_SAMPLE = 32;
 
@@ -109,6 +141,232 @@ export function detectPhotoQuads(img: RgbaImage, options: DetectOptions = {}): Q
 }
 
 /**
+ * Findet die Albumseite selbst – nicht die Fotos darauf.
+ *
+ * Das ist die erste der beiden Stufen. Sie herauszulösen ist der ganze Punkt:
+ * `detectPhotoQuads` entscheidet heute selbst, ob eine gefundene Unterteilung
+ * echt ist, und wenn diese Entscheidung falsch ausfällt, kommt die ganze Seite
+ * als ein einziges „Foto" heraus. Getrennt gefragt hat jede Stufe eine
+ * Aufgabe, die sie zuverlässig beantworten kann – und dazwischen darf der
+ * Nutzer widersprechen.
+ *
+ * Gibt `null` zurück, wenn keine Seite auszumachen ist: Entweder liegt sie
+ * bis an den Bildrand – dann ist das ganze Bild die Seite und es gibt nichts
+ * zu entzerren –, oder es ist gar keine da.
+ */
+export function detectPage(img: RgbaImage, options: DetectOptions = {}): Quad | null {
+  const opts = resolve(options);
+  const { image: small, scale } = downscaleRgba(img, opts.analysisSize);
+  if (small.width < 48 || small.height < 48) return null;
+
+  const gray = toGray(small);
+  const background = estimateBackground(small, gray);
+  const candidates: Quad[] = [];
+
+  if (background.fraction >= BACKGROUND_MIN) {
+    const { raw } = photoMask(small, background);
+    // Welche Farbe die grösste gleichmässige Fläche hat, hängt davon ab, wie
+    // viel Tisch mit im Bild liegt – und beide Fälle kommen vor. Deshalb wird
+    // in beide Richtungen gesucht:
+    //
+    // - Der **Tisch** ist der Untergrund: Die Seite hebt sich davon ab und
+    //   steht mitsamt ihren Fotos als eine Fläche darin.
+    // - Die **Seite** ist der Untergrund, weil sie das Bild füllt: Dann ist
+    //   sie das Loch im Vordergrund, eingefasst vom Tisch.
+    //
+    // Ohne den zweiten Fall findet sich auf einer formatfüllend
+    // aufgenommenen Seite gar keine – und genau so nimmt man sie auf.
+    // Ohne Öffnen: Es entfernt Beschriftung und Fusseln, rundet dabei aber die
+    // Ecken – und eine gerundete Ecke schneidet die konvexe Hülle ab. Für eine
+    // Fläche von der Grösse einer Albumseite braucht es das nicht.
+    const both = [raw, invertMask(raw)];
+    for (const mask of both) {
+      const quad = largestEnclosed(mask, opts);
+      if (quad && hasSurface(small, quad)) candidates.push(quad);
+    }
+  }
+  if (candidates.length === 0) candidates.push(...edgeQuads(gray, opts));
+
+  const best = candidates.slice().sort((a, b) => polygonArea(b) - polygonArea(a))[0];
+  if (!best) return null;
+
+  // Eine Seite füllt einen wesentlichen Teil des Bildes. Ein Krümel ist keine.
+  if (polygonArea(best) < small.width * small.height * PAGE_AREA_MIN) return null;
+
+  // Lieber ein Streifen Tisch zu viel als eine Ecke der Seite zu wenig: Die
+  // Näherung auf vier Ecken schneidet an einer Rundung schon einmal etwas ab,
+  // und was hier fehlt, fehlt einem Foto am Seitenrand. Ein wenig Umgebung im
+  // entzerrten Bild stört dagegen niemanden.
+  const margin = Math.min(small.width, small.height) * PAGE_MARGIN;
+  return scaleQuad(insetQuad(best, -margin), scale);
+}
+
+/**
+ * Die grösste Fläche, die den Bildrand nicht berührt – als Viereck.
+ *
+ * Anders als bei den Fotos wird hier **nicht** eingerückt und **nicht** auf die
+ * Füllung des Vierecks geprüft: Eine Seite darf innen Löcher haben (das sind
+ * ihre Fotos), und ein eingerückter Zuschnitt schnitte am Rand liegende Fotos
+ * an.
+ *
+ * Gibt nichts zurück, wenn daneben eine zweite Fläche vergleichbarer Grösse
+ * liegt. Dann sind es Geschwister – mehrere Fotos auf einer Seite, die das
+ * Bild füllt – und keine Seite mit ihrem Inhalt. Eine Seite hat ihre Fotos
+ * *in* sich, nicht neben sich.
+ */
+function largestEnclosed(mask: Mask, opts: Required<DetectOptions>): Quad | null {
+  const { labels, components } = connectedComponents(mask);
+  const least = mask.width * mask.height * Math.min(PAGE_AREA_MIN, opts.minAreaFraction);
+  const quads: Quad[] = [];
+
+  for (const comp of components) {
+    if (comp.area < least || touchesBorder(comp, mask)) continue;
+    const quad = approximateQuad(convexHull(componentBoundary(labels, mask.width, mask.height, comp)));
+    if (quad && isPlausibleQuad(quad)) quads.push(quad);
+  }
+  if (quads.length === 0) return null;
+
+  const best = quads.reduce((a, b) => (polygonArea(b) > polygonArea(a) ? b : a));
+  const area = polygonArea(best);
+  const sibling = quads.some(
+    (quad) => quad !== best && polygonArea(quad) > area * SIBLING_SHARE && !contains(best, quadCentroid(quad)),
+  );
+  return sibling ? null : best;
+}
+
+/**
+ * Liegt der Punkt im Viereck? Über das Vorzeichen der Kreuzprodukte – für ein
+ * konvexes Viereck, und die hier sind konvex.
+ */
+function contains(quad: Quad, point: Pt): boolean {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = quad[i];
+    const b = quad[(i + 1) % 4];
+    const value = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+    if (value === 0) continue;
+    const current = value > 0 ? 1 : -1;
+    if (sign === 0) sign = current;
+    else if (sign !== current) return false;
+  }
+  return true;
+}
+
+/**
+ * Steht im Inneren dieser Fläche eine gleichmässige Fläche – Papier?
+ *
+ * Der Unterschied zwischen einer Albumseite und einem einzelnen Abzug. Beide
+ * sind grosse eingeschlossene Flächen; nur die Seite ist innen streckenweise
+ * einfarbig.
+ */
+function hasSurface(img: RgbaImage, quad: Quad): boolean {
+  const size = outputSize(shrinkQuad(quad, 0.06), 160);
+  if (size.width < 32 || size.height < 32) return false;
+  const patch = warpPerspective(img, shrinkQuad(quad, 0.06), size.width, size.height);
+  return estimateBackground(patch, toGray(patch)).fraction >= PAGE_SURFACE_MIN;
+}
+
+function invertMask(mask: Mask): Mask {
+  const data = new Uint8Array(mask.data.length);
+  for (let i = 0; i < data.length; i++) data[i] = mask.data[i] ? 0 : 1;
+  return { data, width: mask.width, height: mask.height };
+}
+
+/**
+ * Findet die Fotos auf einer **bereits entzerrten** Albumseite.
+ *
+ * Zwei Unterschiede zum Hineinsuchen in `detectPhotoQuads`, und beide sind
+ * Absicht:
+ *
+ * - **Keine Plausibilitätsprüfung der Unterteilung.** Was gefunden wird, wird
+ *   gezeigt; über richtig und falsch entscheidet der Nutzer. Er kann Ecken
+ *   ziehen, Falsches herausnehmen und Übersehenes antippen – die Maschine muss
+ *   diese Entscheidung nicht mehr allein treffen.
+ * - **Eine Ebene, kein Hineinsuchen.** Die Seite ist schon gefunden; noch
+ *   tiefer zu suchen liefert nur Bildinhalte.
+ *
+ * Der Papierfilter bleibt: Eine helle Stelle *im* Motiv – eine Bettdecke, ein
+ * blasser Himmel – hat oft genau die Farbe des Papiers. Er greift allerdings
+ * nur, wenn überhaupt sichtbar Papier daliegt; auf einer dicht belegten Seite
+ * ist der häufigste Farbton der der Fotos selbst, und dann würde er sie alle
+ * verwerfen.
+ */
+export function detectPhotosOnPage(page: RgbaImage, options: DetectOptions = {}): Quad[] {
+  const opts = resolve(options);
+  const { image: small, scale } = downscaleRgba(page, opts.analysisSize);
+  if (small.width < 48 || small.height < 48) return [];
+
+  const gray = toGray(small);
+  const background = estimateBackground(small, gray);
+
+  // Tiefe 1: Ein Foto darf bis an den Rand der Seite reichen. Auf der obersten
+  // Ebene einer Aufnahme wäre eine randberührende Fläche die Umgebung – hier
+  // ist der Rand die Seite selbst.
+  const found =
+    background.fraction >= BACKGROUND_MIN ? backgroundQuads(small, background, 1, opts) : edgeQuads(gray, opts);
+
+  const filtered =
+    background.fraction >= PAPER_FILTER_MIN ? found.filter((q) => !isPaper(small, q, [background])) : found;
+
+  const smallest = small.width * small.height * opts.minAreaFraction;
+  return dedupe(filtered.filter((q) => polygonArea(q) >= smallest).map((q) => scaleQuad(q, scale)));
+}
+
+/**
+ * Das Foto an der angetippten Stelle – für das, was die Erkennung übersehen
+ * hat.
+ *
+ * Genommen wird die Fläche der Vordergrundmaske, die den Punkt enthält: derselbe
+ * Weg wie bei `detectPhotosOnPage`, aber ohne die Grössen- und Formfilter, an
+ * denen das Foto vorher ausgefallen ist. Ein Tipp auf blankes Papier gibt
+ * `null`.
+ *
+ * **Was das nicht kann:** Einen Abzug, dessen Farbe innerhalb dessen liegt, was
+ * noch als Papier durchgeht, findet auch das nicht – für die Maske *ist* er
+ * Papier. Ein Anlauf über die Kanten wurde gebaut und wieder verworfen: Auf
+ * gekörntem Karton ist die Papierstruktur kräftiger als der Rand eines blassen
+ * Abzugs, das Fluten lief über die ganze Seite. Diesen Fall trägt die
+ * Oberfläche, indem sie an der angetippten Stelle ein Viereck hinlegt, dessen
+ * Ecken sich ziehen lassen – von Hand, aber verlässlich.
+ */
+export function detectAt(page: RgbaImage, point: Pt, options: DetectOptions = {}): Quad | null {
+  const opts = resolve(options);
+  const { image: small, scale } = downscaleRgba(page, opts.analysisSize);
+  if (small.width < 48 || small.height < 48) return null;
+
+  const spot = { x: point.x / scale, y: point.y / scale };
+  const x = Math.round(spot.x);
+  const y = Math.round(spot.y);
+  if (x < 0 || y < 0 || x >= small.width || y >= small.height) return null;
+
+  const gray = toGray(small);
+  const background = estimateBackground(small, gray);
+  const { raw } = photoMask(small, background);
+
+  const found = quadAt(raw, x, y);
+  if (!found) return null;
+
+  const quad = insetQuad(found, 2);
+  if (!isPlausibleQuad(quad)) return null;
+  // Die ganze Seite ist kein Foto. Wer auf Papier tippt, dessen Bereich wächst
+  // bis an die Ränder – das ist die Antwort „hier ist nichts".
+  if (polygonArea(quad) > small.width * small.height * TAP_AREA_MAX) return null;
+  if (polygonArea(quad) < small.width * small.height * TAP_AREA_MIN) return null;
+  return scaleQuad(quad, scale);
+}
+
+/** Die zusammenhängende Fläche der Maske, die diesen Punkt enthält. */
+function quadAt(mask: Mask, x: number, y: number): Quad | null {
+  if (!mask.data[y * mask.width + x]) return null;
+  const { labels, components } = connectedComponents(mask);
+  const label = labels[y * mask.width + x];
+  if (label <= 0) return null;
+  const comp = components.find((c) => c.label === label);
+  if (!comp) return null;
+  return approximateQuad(convexHull(componentBoundary(labels, mask.width, mask.height, comp)));
+}
+
+/**
  * Sucht Fotos in einem Bildausschnitt. Zwei Wege, in dieser Reihenfolge:
  *
  * 1. Über den Untergrund. Eine Albumseite ist eine gleichmässige Fläche; was
@@ -146,6 +404,21 @@ function detectIn(
   return results;
 }
 
+/**
+ * Die Maske dessen, was auf dem Untergrund liegt.
+ *
+ * Öffnen entfernt, was dünner ist als ein Foto: Beschriftung, Fusseln,
+ * Papierstruktur. Der Radius ist an einer echten Albumseite eingestellt –
+ * kleiner, und eine danebenstehende Bildunterschrift bleibt am Foto kleben und
+ * zieht den Zuschnitt auf. Die ungeöffnete Maske wird mit zurückgegeben: Aus
+ * ihr stammt später die Form, denn das Öffnen rundet die Ecken ab.
+ */
+function photoMask(img: RgbaImage, background: Background): { raw: Mask; mask: Mask; radius: number } {
+  const radius = Math.max(3, Math.round(Math.min(img.width, img.height) * 0.019));
+  const raw = fillHoles(foregroundMask(img, background), HOLE_MAX);
+  return { raw, mask: open(raw, radius), radius };
+}
+
 /** Weg 1: alles, was sich farblich vom Untergrund abhebt. */
 function backgroundQuads(
   img: RgbaImage,
@@ -153,13 +426,7 @@ function backgroundQuads(
   depth: number,
   opts: Required<DetectOptions>,
 ): Quad[] {
-  // Öffnen entfernt, was dünner ist als ein Foto: Beschriftung, Fusseln,
-  // Papierstruktur. Der Radius ist an einer echten Albumseite eingestellt –
-  // kleiner, und eine danebenstehende Bildunterschrift bleibt am Foto kleben
-  // und zieht den Zuschnitt auf.
-  const radius = Math.max(3, Math.round(Math.min(img.width, img.height) * 0.019));
-  const raw = fillHoles(foregroundMask(img, background), HOLE_MAX);
-  const mask = open(raw, radius);
+  const { raw, mask, radius } = photoMask(img, background);
 
   // Auf der obersten Ebene ist alles, was den Bildrand berührt, die Umgebung –
   // Tischplatte, Nachbarseiten, die eigene Hand. Die Einrückung bleibt klein:

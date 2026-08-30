@@ -240,9 +240,12 @@ export function isPlausibleQuad(q: Quad): boolean {
  * Verschiebt jede Kante eines konvexen Vierecks um `distance` nach innen und
  * schneidet die Kanten neu. Anders als ein prozentuales Schrumpfen entspricht
  * das genau der Breite des Kantensaums, den die Erkennung mitnimmt.
+ *
+ * Ein negativer Wert weitet das Viereck – gebraucht dort, wo ein zu knapper
+ * Zuschnitt teurer ist als ein zu weiter.
  */
 export function insetQuad(quad: Quad, distance: number): Quad {
-  if (distance <= 0) return quad;
+  if (distance === 0) return quad;
   const cx = (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4;
   const cy = (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4;
 
