@@ -54,8 +54,25 @@ interface Pending {
   quad: Quad;
 }
 
+/**
+ * Die Albumseite als Landkarte: das geradegerückte Bild und die Vierecke der
+ * gewählten Fotos darauf, in seinen Koordinaten.
+ *
+ * Ohne sie ist diese Stufe eine Liste ohne Ort. Der Nutzer weiss zwar, dass er
+ * „Foto 3 von 5" aufnehmen soll, aber nicht *welches* auf der Seite vor ihm –
+ * und schon gar nicht, welche er schon hat. Mit ihr ist beides ein Blick.
+ */
+export interface CloseupOverview {
+  url: string;
+  width: number;
+  height: number;
+  /** In derselben Reihenfolge wie `targets`. */
+  quads: Quad[];
+}
+
 interface Props {
   targets: CloseupTarget[];
+  overview: CloseupOverview;
   existing: Map<number, CloseupShot>;
   onDone: (shots: Map<number, CloseupShot>) => void;
   onCancel: () => void;
@@ -95,12 +112,17 @@ const EXTRA_GAP = 220;
  * bekommt ein Vielfaches – und die Spiegelung, die sich dabei unweigerlich
  * einstellt, rechnet die Seitenaufnahme wieder heraus.
  */
-export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
+export function CloseupScreen({ targets, overview, existing, onDone, onCancel }: Props) {
   const [deviceId, setDeviceId] = useState<string | null>(() => rememberedCamera());
   const camera = useCamera(true, deviceId);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [position, setPosition] = useState(0);
   const [shots, setShots] = useState<Map<number, CloseupShot>>(() => new Map(existing));
+  /**
+   * Wer übersprungen wird, soll nicht gleich wieder drankommen – aber über die
+   * Übersicht wieder erreichbar bleiben.
+   */
+  const [skipped, setSkipped] = useState<Set<number>>(() => new Set());
   const [quads, setQuads] = useState<Quad[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [auto, setAuto] = useState(true);
@@ -142,11 +164,29 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
     setDeviceId(null);
   }, [camera.error, deviceId]);
 
-  const advance = useCallback(() => {
-    setQuads([]);
-    stableCount.current = 0;
-    setPosition((current) => current + 1);
-  }, []);
+  /**
+   * Weiter zum nächsten **offenen** Foto – nicht stur zum nächsten in der
+   * Reihe. Sonst käme ein übersprungenes sofort wieder, und ein schon
+   * aufgenommenes stünde noch einmal an.
+   */
+  const advance = useCallback(
+    (justDone?: number, justSkipped?: number) => {
+      setQuads([]);
+      stableCount.current = 0;
+      setPosition((current) => {
+        for (let step = 1; step <= targets.length; step++) {
+          const next = (current + step) % targets.length;
+          const index = targets[next].index;
+          if (index === justDone || index === justSkipped) continue;
+          if (!shots.has(index) && !skipped.has(index)) return next;
+        }
+        // Nichts mehr offen: Das Ende ist erreicht, und der Effekt unten
+        // schliesst die Runde ab.
+        return targets.length;
+      });
+    },
+    [shots, skipped, targets],
+  );
 
   /** Die Aufnahme behalten und zum nächsten Foto. */
   const keep = useCallback(
@@ -156,9 +196,33 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
         next.set(index, shot);
         return next;
       });
-      advance();
+      advance(index);
     },
     [advance],
+  );
+
+  /** Dieses Foto auslassen – bis der Nutzer es in der Übersicht wieder wählt. */
+  const skip = useCallback(() => {
+    if (!target) return;
+    const index = target.index;
+    setSkipped((current) => new Set(current).add(index));
+    advance(undefined, index);
+  }, [advance, target]);
+
+  /** In der Übersicht ein Foto auswählen. */
+  const jumpTo = useCallback(
+    (at: number) => {
+      setSkipped((current) => {
+        if (!current.has(targets[at].index)) return current;
+        const next = new Set(current);
+        next.delete(targets[at].index);
+        return next;
+      });
+      setQuads([]);
+      stableCount.current = 0;
+      setPosition(at);
+    },
+    [targets],
   );
 
   /**
@@ -493,6 +557,15 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
       </div>
 
       <div className="shrink-0 space-y-3 border-t border-white/10 bg-stone-950 px-4 pt-3 pb-6">
+        <PageMap
+          overview={overview}
+          targets={targets}
+          position={position}
+          done={shots}
+          skipped={skipped}
+          onPick={jumpTo}
+        />
+
         <div className="flex items-center justify-between gap-4">
           <img
             src={target.url}
@@ -510,7 +583,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
           />
 
           <div className="flex w-16 justify-end">
-            <Button onClick={advance} className="px-3 py-1.5 text-xs">
+            <Button onClick={skip} className="px-3 py-1.5 text-xs">
               Überspringen
             </Button>
           </div>
@@ -533,6 +606,97 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
           liefert die Stellen, die hier glänzen.
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Die Albumseite als Landkarte: wo das gesuchte Foto liegt, und welche schon
+ * im Kasten sind.
+ *
+ * Das ist die Führung, die dieser Stufe gefehlt hat. „Foto 3 von 5" sagt
+ * nichts darüber, welcher Abzug auf der Seite vor einem gemeint ist – und
+ * nichts darüber, was noch aussteht. Beides ist hier ein Blick.
+ */
+function PageMap({
+  overview,
+  targets,
+  position,
+  done,
+  skipped,
+  onPick,
+}: {
+  overview: CloseupOverview;
+  targets: CloseupTarget[];
+  position: number;
+  done: Map<number, CloseupShot>;
+  skipped: Set<number>;
+  onPick: (at: number) => void;
+}) {
+  const { width, height } = overview;
+  const stroke = Math.max(width, height) * 0.006;
+
+  return (
+    <div className="mx-auto w-full max-w-xs">
+      <div className="relative overflow-hidden rounded-md ring-1 ring-white/15" style={{ aspectRatio: width / height }}>
+        <img src={overview.url} alt="Albumseite" className="size-full object-cover opacity-60" />
+        <svg viewBox={`0 0 ${width} ${height}`} className="absolute inset-0 size-full">
+          {overview.quads.map((quad, at) => {
+            const index = targets[at]?.index ?? at;
+            const taken = done.has(index);
+            const here = at === position;
+            const passed = skipped.has(index);
+            const cx = (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4;
+            const cy = (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4;
+            const size = Math.max(width, height) * 0.06;
+
+            return (
+              <g
+                key={at}
+                role="button"
+                aria-label={`Foto ${index + 1}${taken ? ', aufgenommen' : passed ? ', übersprungen' : ''}`}
+                data-testid={`karte-${index}`}
+                className="cursor-pointer"
+                onClick={() => onPick(at)}
+              >
+                <polygon
+                  points={quad.map((p) => `${p.x},${p.y}`).join(' ')}
+                  fill={taken ? 'rgba(52,211,153,0.35)' : here ? 'rgba(251,191,36,0.3)' : 'rgba(0,0,0,0.45)'}
+                  stroke={taken ? '#34d399' : here ? '#fbbf24' : 'rgba(255,255,255,0.5)'}
+                  strokeWidth={here ? stroke * 1.8 : stroke}
+                  strokeDasharray={passed ? `${stroke * 3}` : undefined}
+                />
+                {taken ? (
+                  <path
+                    d={`M ${cx - size * 0.45} ${cy} L ${cx - size * 0.1} ${cy + size * 0.36} L ${cx + size * 0.5} ${cy - size * 0.36}`}
+                    fill="none"
+                    stroke="#052e16"
+                    strokeWidth={size * 0.24}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ) : (
+                  <text
+                    x={cx}
+                    y={cy}
+                    fill={here ? '#1c1917' : 'rgba(255,255,255,0.85)'}
+                    fontSize={size}
+                    fontWeight="700"
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    className="select-none"
+                  >
+                    {index + 1}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <p className="pt-1.5 text-center text-[11px] text-stone-500" data-testid="karte-stand">
+        {done.size} von {targets.length} aufgenommen · tippen, um zu wechseln
+      </p>
     </div>
   );
 }

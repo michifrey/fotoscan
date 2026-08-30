@@ -181,3 +181,34 @@ test('die geprüften Vierecke der Seite werden mitgespeichert', async ({ page })
     }
   }
 });
+
+test('die Lupe zeigt, wohin die Ecke kommt', async ({ page }) => {
+  // Der Finger verdeckt genau die Stelle, auf die es ankommt, und die Kante
+  // einer Albumseite ist auf einem Telefonbildschirm ein Haar breit. Die Lupe
+  // erscheint, solange gedrückt wird, und verschwindet beim Loslassen –
+  // gesetzt wird die Ecke erst dann, bis dahin lässt sie sich schieben.
+  await page.goto('/');
+  await page.getByTestId('album-name').fill('Lupe');
+  await page.getByTestId('create-album').click();
+  await page.getByTestId('scan').click();
+  await page.getByTestId('import-input').setInputFiles(FIXTURE);
+  await expect(page.getByRole('heading', { name: 'Seite prüfen' })).toBeVisible({ timeout: 30_000 });
+
+  await page.getByTestId('ecken-setzen').click();
+  const flaeche = page.getByTestId('ecken-tippen');
+  const box = (await flaeche.boundingBox())!;
+
+  await expect(page.getByTestId('lupe')).toHaveCount(0);
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await expect(page.getByTestId('lupe')).toBeVisible();
+
+  // Beim Schieben bleibt sie stehen und folgt der Stelle.
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.22);
+  await expect(page.getByTestId('lupe')).toBeVisible();
+
+  await page.mouse.up();
+  await expect(page.getByTestId('lupe')).toHaveCount(0);
+  // Und die erste Ecke ist gesetzt – es geht zur zweiten.
+  await expect(page.getByTestId('seite-hinweis')).toHaveText(/oben rechts.*2 von 4/);
+});

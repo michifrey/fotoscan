@@ -13,7 +13,7 @@ import type { Closeup } from '../lib/imaging/closeup';
 import type { PageMarks } from '../lib/storage';
 import type { Shot } from './CaptureScreen';
 import { CloseupScreen } from './CloseupScreen';
-import type { CloseupShot, CloseupTarget } from './CloseupScreen';
+import type { CloseupOverview, CloseupShot, CloseupTarget } from './CloseupScreen';
 import { QuadEditor } from './QuadEditor';
 import { BackIcon, Button, IconButton, Spinner, Switch, TopBar } from './ui';
 
@@ -67,6 +67,8 @@ const PREVIEW_MAX = 420;
 
 /** Längste Kante, auf die die Seite entzerrt wird. */
 const PAGE_MAX = 2200;
+/** Kantenlänge der Landkarte in der dritten Stufe – sie wird klein gezeigt. */
+const MAP_MAX = 520;
 
 /** Kantenlänge eines von Hand gesetzten Vierecks, als Anteil der Seitenbreite. */
 const HAND_SIZE = 0.22;
@@ -97,6 +99,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [targets, setTargets] = useState<CloseupTarget[] | null>(null);
+  const [overview, setOverview] = useState<CloseupOverview | null>(null);
   /** Fotos, auf denen auch nach dem Verrechnen noch eine Spiegelung liegt. */
   const [glare, setGlare] = useState<number[]>([]);
 
@@ -395,6 +398,17 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
         };
       }),
     );
+    // Und die Seite als Landkarte dazu: Ohne sie sagt „Foto 3 von 5" nichts
+    // darüber, welcher Abzug auf der Seite gemeint ist.
+    const mapSize = outputSize(fullQuad(page.width, page.height), MAP_MAX);
+    const map = warpPerspective(page, fullQuad(page.width, page.height), mapSize.width, mapSize.height);
+    const factor = mapSize.width / page.width;
+    setOverview({
+      url: URL.createObjectURL(await blobFromImageData(map, 0.7)),
+      width: mapSize.width,
+      height: mapSize.height,
+      quads: selected.map((index) => scaleQuad(quads[index], factor)),
+    });
     setTargets(list);
   }, [page, quads, selected]);
 
@@ -403,15 +417,20 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
       current?.forEach((entry) => URL.revokeObjectURL(entry.url));
       return null;
     });
+    setOverview((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return null;
+    });
   }, []);
 
   // Nur was auch gespeichert wird, ist einen Hinweis wert.
   const betroffen = glare.filter((index) => selected.includes(index));
 
-  if (targets) {
+  if (targets && overview) {
     return (
       <CloseupScreen
         targets={targets}
+        overview={overview}
         existing={new Map()}
         onDone={(shots) => {
           closeCloseups();
@@ -459,6 +478,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
               onChange={(_, quad) => setPageQuad(insideImage(quad, frame.width, frame.height))}
               onTap={awaiting === null ? undefined : (point) => setCorner(point)}
               awaiting={awaiting ?? undefined}
+              source={sourceUrl ?? undefined}
             />
           </div>
 
@@ -527,6 +547,7 @@ export function ReviewScreen({ shot, onCancel, onAccept }: Props) {
               onActivate={setEditing}
               onAddAt={(point) => void addAt(point)}
               onChange={(index, quad) => setQuads((current) => current.map((q, i) => (i === index ? quad : q)))}
+              source={pageUrl ?? undefined}
             />
           )}
         </div>

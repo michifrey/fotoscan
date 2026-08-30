@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 import { dist } from '../lib/imaging/geometry';
 import type { Pt, Quad } from '../lib/imaging/types';
 
@@ -32,7 +32,22 @@ interface Props {
   onTap?: (point: Pt) => void;
   /** Welche Ecke gerade gesetzt wird; sie wird hervorgehoben. */
   awaiting?: number;
+  /**
+   * Das Bild darunter, als Adresse.
+   *
+   * Damit bekommt das Ziehen einer Ecke eine **Lupe**: Der Finger verdeckt
+   * genau die Stelle, auf die es ankommt, und die Kante eines Abzugs ist auf
+   * einem Telefonbildschirm ein Haar breit. Ohne Bild keine Lupe – dann bleibt
+   * alles wie bisher.
+   */
+  source?: string;
 }
+
+/** Vergrösserung der Lupe. */
+const LOUPE_ZOOM = 3.5;
+
+/** Ihr Durchmesser, als Anteil der kurzen Bildkante. */
+const LOUPE_SIZE = 0.28;
 
 const CORNER_LABELS = ['oben links', 'oben rechts', 'unten rechts', 'unten links'];
 
@@ -54,9 +69,13 @@ export function QuadEditor({
   numbered,
   onTap,
   awaiting,
+  source,
 }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragging = useRef<{ quad: number; corner: number } | null>(null);
+  /** Die Stelle, die die Lupe gerade zeigt – oder `null`, wenn keine sichtbar ist. */
+  const [lens, setLens] = useState<Pt | null>(null);
+  const tapping = useRef(false);
 
   const toImage = useCallback(
     (clientX: number, clientY: number): Pt => {
@@ -77,6 +96,7 @@ export function QuadEditor({
       const quad = quads[drag.quad];
       if (!quad) return;
       const point = toImage(event.clientX, event.clientY);
+      setLens(point);
       onChange(drag.quad, quad.map((p, i) => (i === drag.corner ? point : p)) as Quad);
     },
     [onChange, quads, toImage],
@@ -85,6 +105,7 @@ export function QuadEditor({
   const endDrag = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
     if (!dragging.current) return;
     dragging.current = null;
+    setLens(null);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }, []);
 
@@ -154,6 +175,7 @@ export function QuadEditor({
                   onPointerDown={(event) => {
                     event.stopPropagation();
                     dragging.current = { quad: index, corner: cornerIndex };
+                    setLens(corner);
                     event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
                   }}
                 />
@@ -224,7 +246,10 @@ export function QuadEditor({
         );
       })}
 
-      {/* Zuoberst, damit jeder Tipp hier landet – auch über einem Viereck. */}
+      {/* Zuoberst, damit jeder Tipp hier landet – auch über einem Viereck.
+          Gesetzt wird beim *Loslassen*, nicht beim Aufsetzen: Dazwischen zeigt
+          die Lupe, wo der Punkt landen würde, und er lässt sich noch schieben.
+          Der Finger verdeckt sonst genau die Kante, die er treffen soll. */}
       {onTap && (
         <rect
           x={0}
@@ -234,9 +259,80 @@ export function QuadEditor({
           fill="transparent"
           data-testid="ecken-tippen"
           className="cursor-crosshair"
-          onPointerDown={(event) => onTap(toImage(event.clientX, event.clientY))}
+          onPointerDown={(event) => {
+            tapping.current = true;
+            setLens(toImage(event.clientX, event.clientY));
+            // Auf dem Rechteck selbst festhalten, nicht auf der Zeichenfläche:
+            // Sonst gehen die folgenden Ereignisse an diese, und das Loslassen
+            // käme hier nie an.
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (tapping.current) setLens(toImage(event.clientX, event.clientY));
+          }}
+          onPointerUp={(event) => {
+            tapping.current = false;
+            onTap(toImage(event.clientX, event.clientY));
+            setLens(null);
+          }}
+          onPointerCancel={() => {
+            tapping.current = false;
+            setLens(null);
+          }}
         />
       )}
+
+      {lens && source && <Loupe point={lens} width={width} height={height} source={source} />}
     </svg>
+  );
+}
+
+/**
+ * Die Lupe: ein runder Ausschnitt, vergrössert, weit weg vom Finger.
+ *
+ * Sie sitzt oben und wechselt die Seite, sobald der Finger ihr zu nahe kommt –
+ * eine Lupe, die man verdeckt, ist keine.
+ */
+function Loupe({ point, width, height, source }: { point: Pt; width: number; height: number; source: string }) {
+  const radius = (Math.min(width, height) * LOUPE_SIZE) / 2;
+  const margin = radius * 1.25;
+  const cx = point.x < width / 2 ? width - margin : margin;
+  const cy = margin;
+  const id = useId();
+
+  return (
+    <g className="pointer-events-none" data-testid="lupe">
+      <defs>
+        <clipPath id={id}>
+          <circle cx={cx} cy={cy} r={radius} />
+        </clipPath>
+      </defs>
+      <circle cx={cx} cy={cy} r={radius} fill="#0c0a09" />
+      {/* Der Zuschnitt sitzt auf der Gruppe, die Vergrösserung auf dem Bild
+          darin: Beides am selben Element gedacht, und der Kreis läge im schon
+          vergrösserten Raum – also an der falschen Stelle. */}
+      <g clipPath={`url(#${id})`}>
+        <image
+          href={source}
+          x={0}
+          y={0}
+          width={width}
+          height={height}
+          preserveAspectRatio="none"
+          transform={`translate(${cx - point.x * LOUPE_ZOOM} ${cy - point.y * LOUPE_ZOOM}) scale(${LOUPE_ZOOM})`}
+        />
+      </g>
+      {/* Fadenkreuz: Ohne es weiss niemand, welcher Punkt gemeint ist. */}
+      <line x1={cx - radius * 0.5} y1={cy} x2={cx + radius * 0.5} y2={cy} stroke="#fbbf24" strokeWidth={radius * 0.035} />
+      <line x1={cx} y1={cy - radius * 0.5} x2={cx} y2={cy + radius * 0.5} stroke="#fbbf24" strokeWidth={radius * 0.035} />
+      <circle
+        cx={cx}
+        cy={cy}
+        r={radius}
+        fill="none"
+        stroke="#fbbf24"
+        strokeWidth={radius * 0.05}
+      />
+    </g>
   );
 }
