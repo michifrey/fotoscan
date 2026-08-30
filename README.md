@@ -117,8 +117,10 @@ wenn sie ausdrücklich exportiert oder geteilt werden.
    entfernen, Übersehenes antippen. Drehen und Aufhellen sind hier ebenfalls
    eingestellt.
 6. **Fotos einzeln scannen:** Die App geht die gewählten Fotos der Reihe nach
-   durch; jedes wird formatfüllend aufgenommen, einzeln überspringbar. Danach
-   wird gespeichert. Wer es eilig hat, nimmt darunter **Ohne Nahaufnahmen
+   durch. Jedes so gross wie möglich ins Bild nehmen – aber **ganz**: Ein
+   schmaler Streifen Albumpapier muss ringsum sichtbar bleiben, sonst weiss die
+   App nicht, wo das Foto aufhört. Einzeln überspringbar. Danach wird
+   gespeichert; wer es eilig hat, nimmt darunter **Ohne Nahaufnahmen
    speichern**.
 7. Im Album: tippen zum Ansehen, **Ordnen** zum Umsortieren, **Beschriften**
    für Titel, Datum und Notiz, das Suchfeld zum Wiederfinden.

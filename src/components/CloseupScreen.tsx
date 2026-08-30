@@ -123,11 +123,15 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
       // durchs Motiv geschnitten, ohne dass jemand es merkt.
       let quad = await locateAsync(target.reference, frame);
       if (!quad) {
+        // Rückfall auf die Kantensuche. Sie braucht einen schmalen Streifen
+        // Papier ringsum – ragt das Foto über den Bildrand, ist dort nichts
+        // mehr, woran sie es erkennen könnte. Deshalb sagt die Führung, dass
+        // die Ränder sichtbar bleiben sollen.
         const found = await detect(frame);
         quad = found.slice().sort((a, b) => polygonArea(b) - polygonArea(a))[0] ?? null;
       }
       if (!quad || polygonArea(quad) < frame.width * frame.height * FILL_MIN) {
-        setHint('Dieses Foto ist nicht formatfüllend im Bild – näher herangehen.');
+        setHint('Foto ganz ins Bild nehmen – seine Ränder müssen knapp sichtbar bleiben.');
         navigator.vibrate?.([20, 60, 20]);
         return;
       }
@@ -177,7 +181,15 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
             // *dieses* Foto formatfüllend im Bild liegt, und das weiss die
             // Seitenaufnahme: Sie zeigt es bereits.
             const current = targetRef.current;
-            const found = current ? await locateAsync(current.reference, frame) : null;
+            let found = current ? await locateAsync(current.reference, frame) : null;
+            if (!found) {
+              // Findet die Seitenaufnahme es nicht wieder – anderes Licht,
+              // andere Schärfe –, genügt auch ein formatfüllendes Viereck.
+              // Sonst löste der Sucher nie aus, und das wäre schlimmer als
+              // einmal zu früh.
+              const quads = await detect(frame, 420);
+              found = quads.slice().sort((a, b) => polygonArea(b) - polygonArea(a))[0] ?? null;
+            }
             const largest = found ? [found] : [];
             const fills = found !== null && polygonArea(found) >= frame.width * frame.height * FILL_MIN;
 
@@ -289,7 +301,7 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
                 : (hint ??
                   (quads.length > 0
                     ? 'Foto erkannt – ruhig halten'
-                    : 'Dieses Foto formatfüllend ins Bild nehmen')))}
+                    : 'Foto ganz ins Bild – die Ränder müssen knapp sichtbar bleiben')))}
           </span>
         </div>
 
@@ -350,8 +362,10 @@ export function CloseupScreen({ targets, existing, onDone, onCancel }: Props) {
         </div>
 
         <p className="text-center text-[11px] leading-relaxed text-stone-500">
-          Dieses Foto formatfüllend aufnehmen. Spiegelungen sind kein Problem – die Seitenaufnahme
-          liefert die Stellen, die hier glänzen.
+          Dieses Foto möglichst gross ins Bild nehmen, aber <em className="not-italic text-stone-300">ganz</em> –
+          ein schmaler Streifen Albumpapier muss ringsum sichtbar bleiben, sonst weiss die App nicht,
+          wo es aufhört. Spiegelungen sind kein Problem – die Seitenaufnahme liefert die Stellen, die
+          hier glänzen.
         </p>
       </div>
     </div>
