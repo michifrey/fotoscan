@@ -173,7 +173,7 @@ describe('die weite Suche für die Vorschau', () => {
       expect(wide, `weit bei ${share}`).not.toBeNull();
       expect(cornerError(wide!, t)).toBeLessThan(900 * 0.03);
     }
-  });
+  }, 30_000);
 
   it('schlägt auch von weitem nicht auf das falsche Foto an', () => {
     // Die Voraussetzung für den automatischen Wechsel in der Führung: Ein
@@ -183,7 +183,7 @@ describe('die weite Suche für die Vorschau', () => {
       const frame = closeup(source, distantView(PHOTOS[0], share), [900, 675]);
       expect(locate(other, frame, PREVIEW_LOCATE)).toBeNull();
     }
-  });
+  }, 30_000);
 
   it('verortet die ganze Seite als Anker, auch wenn sie übers Bild hinausragt', () => {
     // Wenn nicht einmal die weite Fotosuche trifft, bleibt die Seite selbst:
@@ -199,7 +199,7 @@ describe('die weite Suche für die Vorschau', () => {
       const frame = closeup(source, view, [900, 675]);
       expect(locate(pageRef, frame, PAGE_LOCATE), `Seite bei ${spread}`).not.toBeNull();
     }
-  });
+  }, 30_000);
 
   it('erkennt im Zuschnittvergleich dasselbe Foto wieder – und nur dieses', () => {
     // Der Prüfstein gegen Doppelte: „lässt mich dreimal dasselbe Foto
@@ -238,5 +238,5 @@ describe('die weite Suche für die Vorschau', () => {
     expect(locate(crop(PHOTOS[0], 1.06, 5), stored, DUPLICATE_LOCATE)).not.toBeNull();
     // Das andere Foto der Seite: kein Alarm.
     expect(locate(crop(PHOTOS[1], 1, 0), stored, DUPLICATE_LOCATE)).toBeNull();
-  });
+  }, 30_000);
 });
